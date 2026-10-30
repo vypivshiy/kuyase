@@ -16,6 +16,21 @@
 Скриншоты панелей визуализации
 ![](assets/theme_dark.png)
 ![](assets/theme_light.png)
+
+Видео демонстация
+
+Станция 3 (orion)
+
+https://github.com/user-attachments/assets/6d5f3f82-f871-4222-8145-2aedb490f2d6
+
+Станция мини (1 поколение)
+
+https://github.com/user-attachments/assets/938ed4e6-effd-455e-b322-a2376517cb8e
+
+
+
+
+
 ---
 
 ## Что эмулируется и какие заглушки применяются
