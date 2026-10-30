@@ -522,7 +522,22 @@ impl AuxLightDevice for LogoSysfsFbDevice {
         self.count
     }
 
-    fn init(&self) {}
+    fn init(&self) {
+        for i in 0..self.count {
+            for c in ["red", "green", "blue"] {
+                let dir = format!("/sys/class/leds/{}:{}:logo{}", self.sysfs_prefix, c, i);
+                if !Path::new(&dir).exists() {
+                    let _ = fs::create_dir_all(&dir);
+                    let _ = fs::write(format!("{}/brightness", dir), "0\n");
+                    let _ = fs::write(format!("{}/max_brightness", dir), "255\n");
+                    let _ = fs::write(format!("{}/trigger", dir), "[ledfb-logo] none\n");
+                }
+            }
+        }
+        if !Path::new("/dev/fb1").exists() && self.count > 0 {
+            let _ = fs::write("/dev/fb1", vec![0u8; self.count * 3]);
+        }
+    }
 
     fn read_zones(&self, native_frame: &[[u8; 3]]) -> Vec<[u8; 3]> {
         let mut out = vec![[0u8; 3]; self.count];
@@ -545,7 +560,19 @@ impl AuxLightDevice for LogoSysfsFbDevice {
             }
             *slot = [r, g, b];
         }
-        if !any_sysfs && native_frame.len() >= self.count {
+        if any_sysfs {
+            return out;
+        }
+        if let Ok(raw) = fs::read("/dev/fb1") {
+            if raw.len() >= self.count * 3 && raw[..self.count * 3].iter().any(|&b| b > 0) {
+                for i in 0..self.count {
+                    let base = i * 3;
+                    out[i] = [raw[base], raw[base + 1], raw[base + 2]];
+                }
+                return out;
+            }
+        }
+        if native_frame.len() >= self.count {
             let any_native = native_frame
                 .iter()
                 .take(self.count)
@@ -559,7 +586,17 @@ impl AuxLightDevice for LogoSysfsFbDevice {
         out
     }
 
-    fn write_native_frame(&self, _px: &[[u8; 3]]) {}
+    fn write_native_frame(&self, px: &[[u8; 3]]) {
+        if self.count == 0 {
+            return;
+        }
+        let mut raw = Vec::with_capacity(self.count * 3);
+        for i in 0..self.count {
+            let c = px.get(i % px.len().max(1)).copied().unwrap_or([0, 0, 0]);
+            raw.extend_from_slice(&c);
+        }
+        let _ = fs::write("/dev/fb1", raw);
+    }
 }
 
 /// Эмбиент-подсветка Яндекс Станции 3 (`orion`):

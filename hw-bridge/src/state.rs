@@ -355,6 +355,7 @@ impl BridgeState {
             "Volume changed -> {}/10 (master_volume={}, LED volume.led arc active)",
             clamped, raw_vol
         ));
+        crate::leds::sync_immediate_led_state(self);
     }
 
     pub fn log(&self, msg: impl Into<String>) {

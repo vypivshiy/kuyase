@@ -94,14 +94,24 @@ pub fn read_adb_packet<R: Read>(reader: &mut R) -> io::Result<AdbPacket> {
     })
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AdbClient {
     addr: SocketAddr,
+    conn: std::sync::Arc< std::sync::Mutex<Option<(TcpStream, u32)>> >,
+}
+
+impl std::fmt::Debug for AdbClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdbClient").field("addr", &self.addr).finish()
+    }
 }
 
 impl AdbClient {
     pub fn new(addr: SocketAddr) -> Self {
-        Self { addr }
+        Self {
+            addr,
+            conn: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
     }
 
     pub fn from_host_port(host: &str, port: u16) -> Result<Self, String> {
@@ -111,7 +121,7 @@ impl AdbClient {
             .map_err(|e| format!("failed to resolve ADB target '{}': {}", target, e))?
             .next()
             .ok_or_else(|| format!("no socket address found for '{}'", target))?;
-        Ok(Self { addr })
+        Ok(Self::new(addr))
     }
 
     pub fn parse_target(target: &str) -> Result<Self, String> {
@@ -126,7 +136,7 @@ impl AdbClient {
             .map_err(|e| format!("failed to resolve ADB address '{}': {}", with_port, e))?
             .next()
             .ok_or_else(|| format!("no socket address found for '{}'", with_port))?;
-        Ok(Self { addr })
+        Ok(Self::new(addr))
     }
 
     pub fn addr(&self) -> SocketAddr {
@@ -192,17 +202,25 @@ impl AdbClient {
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let io_timeout = remaining.max(Duration::from_millis(1500));
-            let mut stream = match self.connect_with_retry(io_timeout) {
-                Ok(s) => s,
-                Err(e) => {
-                    last_err = e;
-                    break;
+
+            let (mut stream, local_id) = {
+                let mut guard = self.conn.lock().unwrap();
+                if let Some((s, next_id)) = guard.take() {
+                    (s, next_id)
+                } else {
+                    match self.connect_with_retry(io_timeout) {
+                        Ok(s) => (s, 1u32),
+                        Err(e) => {
+                            last_err = e;
+                            break;
+                        }
+                    }
                 }
             };
+
             let _ = stream.set_read_timeout(Some(io_timeout));
             let _ = stream.set_write_timeout(Some(io_timeout));
 
-            let local_id = 1u32;
             let mut open_payload = Vec::with_capacity(7 + command.len());
             open_payload.extend_from_slice(b"shell:");
             open_payload.extend_from_slice(command.as_bytes());
@@ -211,24 +229,23 @@ impl AdbClient {
             if let Err(e) = write_adb_packet(&mut stream, A_OPEN, local_id, 0, &open_payload) {
                 last_err = format!("ADB OPEN failed: {}", e);
                 let _ = stream.shutdown(Shutdown::Both);
-                thread::sleep(Duration::from_millis(120));
+                thread::sleep(Duration::from_millis(100));
                 continue;
             }
 
             let mut output = Vec::new();
-            let mut got_okay_or_data = false;
+            let mut got_clse = false;
             let mut stream_err = None;
 
             loop {
                 match read_adb_packet(&mut stream) {
                     Ok(pkt) => match pkt.command {
-                        A_OKAY => {
-                            got_okay_or_data = true;
-                        }
+                        A_OKAY => {}
                         A_WRTE => {
-                            got_okay_or_data = true;
                             let remote_id = pkt.arg0;
-                            output.extend_from_slice(&pkt.payload);
+                            if pkt.arg1 == local_id || pkt.arg1 == 0 {
+                                output.extend_from_slice(&pkt.payload);
+                            }
                             if let Err(e) =
                                 write_adb_packet(&mut stream, A_OKAY, local_id, remote_id, b"")
                             {
@@ -240,35 +257,34 @@ impl AdbClient {
                             let remote_id = pkt.arg0;
                             let _ =
                                 write_adb_packet(&mut stream, A_CLSE, local_id, remote_id, b"");
-                            break;
+                            if pkt.arg1 == local_id || pkt.arg1 == 0 {
+                                got_clse = true;
+                                break;
+                            }
                         }
                         _ => {}
                     },
                     Err(e) => {
-                        if got_okay_or_data && e.kind() == io::ErrorKind::UnexpectedEof {
-                            break;
-                        }
                         stream_err = Some(format!("ADB stream read failed: {}", e));
                         break;
                     }
                 }
             }
 
-            let _ = stream.shutdown(Shutdown::Both);
-
-            if let Some(err) = stream_err {
-                if !got_okay_or_data && Instant::now() < deadline {
-                    last_err = err;
-                    thread::sleep(Duration::from_millis(150));
-                    continue;
-                }
-                if output.is_empty() {
-                    return Err(err);
-                }
+            if got_clse && stream_err.is_none() {
+                let next_id = local_id.wrapping_add(1).max(1);
+                *self.conn.lock().unwrap() = Some((stream, next_id));
+                let text = String::from_utf8_lossy(&output).replace("\r\n", "\n");
+                return Ok(text.trim().to_string());
             }
 
-            let text = String::from_utf8_lossy(&output).replace("\r\n", "\n");
-            return Ok(text.trim().to_string());
+            let _ = stream.shutdown(Shutdown::Both);
+            if let Some(err) = stream_err {
+                last_err = err;
+            }
+            if Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(120));
+            }
         }
 
         Err(last_err)

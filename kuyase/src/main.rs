@@ -1,6 +1,7 @@
 use kuyase::adb::AdbClient;
 use kuyase::bridge_client::BridgeClient;
 use kuyase::session::{resolve_repo_root, EmulatorSession, SessionConfig};
+use kuyase::test_suite::run_multi_board_tests;
 use serde_json::Value;
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -13,6 +14,7 @@ fn print_usage() {
          \n\
          Usage:\n\
            kuyase run --headless [--board <slug>] [--mode <stub|full>] [--snapshot]\n\
+           kuyase test [--board <slug>] [--snapshot]\n\
          \n\
          Options:\n\
            -b, --board <slug>        Board profile slug (yandexmini, yandexmini2, yandexmicro, cucumber, orion, ...)\n\
@@ -243,6 +245,16 @@ fn main() {
 
     let res = match opts.subcommand.as_str() {
         "run" => run_headless_session(&opts),
+        "test" => {
+            let root = resolve_repo_root();
+            run_multi_board_tests(
+                &root,
+                opts.board.as_deref(),
+                opts.bridge_port,
+                opts.adb_port,
+                opts.snapshot.unwrap_or(true),
+            )
+        }
         other => Err(format!("subcommand '{}' is not implemented yet", other)),
     };
 

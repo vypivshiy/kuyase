@@ -131,9 +131,75 @@ fn apply_native_frames(state: &BridgeState, ring_px: Vec<[u8; 3]>, aux_px: Optio
 
     let aux_zones = state.peripherals.aux_light.zone_count();
     if aux_zones > 0 {
-        let zones = aux_px.unwrap_or_else(|| vec![[0u8; 3]; aux_zones]);
-        state.peripherals.aux_light.write_native_frame(&zones);
-        *state.native_aux_frame.lock().unwrap() = zones;
+        if let Some(zones) = aux_px {
+            state.peripherals.aux_light.write_native_frame(&zones);
+            *state.native_aux_frame.lock().unwrap() = zones;
+        } else {
+            *state.native_aux_frame.lock().unwrap() = vec![[0u8; 3]; aux_zones];
+        }
+    }
+}
+
+pub fn sync_immediate_led_state(state: &BridgeState) {
+    let ring_leds = state.ring_leds;
+    let aux_zones = state.peripherals.aux_light.zone_count();
+    let now = now_millis();
+    let vol_until = state.volume_overlay_until_ms.load(Ordering::Relaxed);
+    let forced = state.forced_led_pattern.lock().unwrap().clone();
+
+    if now < vol_until {
+        let lvl = state.volume_level.load(Ordering::Relaxed);
+        let volume_frames = load_led_pattern("volume", ring_leds);
+        let px = build_volume_led_frame(&volume_frames, lvl, ring_leds);
+        apply_native_frames(state, px, None);
+        state.peripherals.front_display.render_volume_overlay(lvl, true);
+        return;
+    }
+
+    if !forced.is_empty() {
+        if let Some(hex) = forced.strip_prefix("rgb:") {
+            let clean = hex.trim_start_matches('#');
+            let rgb = u32::from_str_radix(clean, 16).unwrap_or(0);
+            let c = [
+                ((rgb >> 16) & 0xff) as u8,
+                ((rgb >> 8) & 0xff) as u8,
+                (rgb & 0xff) as u8,
+            ];
+            let aux = if aux_zones > 0 {
+                Some(vec![c; aux_zones])
+            } else {
+                None
+            };
+            apply_native_frames(state, vec![c; ring_leds], aux);
+            return;
+        }
+        let frames = load_led_pattern(&forced, ring_leds);
+        if let Some((px, _)) = frames.first() {
+            apply_native_frames(state, px.clone(), None);
+        }
+        return;
+    }
+
+    if state.mics_muted.load(Ordering::Relaxed) {
+        let mute_frames = load_led_pattern("mute_mics", ring_leds);
+        let (ref px, _) = mute_frames[0];
+        let aux = if aux_zones > 0 {
+            Some(vec![[180, 0, 0]; aux_zones])
+        } else {
+            None
+        };
+        apply_native_frames(state, px.clone(), aux);
+        return;
+    }
+
+    if state.alice_state() == AliceState::Idle && state.forced_led_pattern.lock().unwrap().is_empty()
+    {
+        let aux = if aux_zones > 0 {
+            Some(vec![[0u8; 3]; aux_zones])
+        } else {
+            None
+        };
+        apply_native_frames(state, vec![[0u8; 3]; ring_leds], aux);
     }
 }
 
@@ -258,7 +324,12 @@ pub fn spawn_native_led_animator(state: Arc<BridgeState>) {
             if was_active {
                 was_active = false;
                 frame_idx = 0;
-                apply_native_frames(&state, vec![[0u8; 3]; ring_leds], None);
+                let aux = if aux_zones > 0 {
+                    Some(vec![[0u8; 3]; aux_zones])
+                } else {
+                    None
+                };
+                apply_native_frames(&state, vec![[0u8; 3]; ring_leds], aux);
             }
             thread::sleep(Duration::from_millis(40));
         }

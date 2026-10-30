@@ -158,6 +158,7 @@ pub fn handle_host_command(state: &Arc<BridgeState>, cmd: HostCommand) -> GuestP
                 "mute" => {
                     let new_muted = !state.mics_muted.load(Ordering::SeqCst);
                     state.mics_muted.store(new_muted, Ordering::SeqCst);
+                    state.volume_overlay_until_ms.store(0, Ordering::SeqCst);
                     state.peripherals.audio_hw.on_volume_or_mute_changed(
                         state.volume_level.load(Ordering::Relaxed),
                         new_muted,
@@ -179,6 +180,7 @@ pub fn handle_host_command(state: &Arc<BridgeState>, cmd: HostCommand) -> GuestP
                         );
                         state.log("Button MUTE -> Microphones UNMUTED (active)");
                     }
+                    crate::leds::sync_immediate_led_state(state);
                 }
                 "volume_up" => {
                     let cur = state.volume_level.load(Ordering::Relaxed);
@@ -254,6 +256,7 @@ pub fn handle_host_command(state: &Arc<BridgeState>, cmd: HostCommand) -> GuestP
             } else {
                 state.log(format!("LED Pattern Tester -> Forced pattern '{}'", pat));
             }
+            crate::leds::sync_immediate_led_state(state);
             GuestPacket::CommandAck {
                 ok: true,
                 error: None,
@@ -616,11 +619,11 @@ fn handle_client(stream: TcpStream, state: Arc<BridgeState>) -> std::io::Result<
         match read_host_command(&mut reader) {
             Ok(cmd) => {
                 let ack = handle_host_command(&state, cmd);
-                if tx.send(ack).is_err() {
-                    break;
-                }
                 let updated_snap = build_state_snapshot(&state);
                 if tx.send(GuestPacket::StateSnapshot(updated_snap)).is_err() {
+                    break;
+                }
+                if tx.send(ack).is_err() {
                     break;
                 }
             }
