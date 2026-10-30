@@ -1,0 +1,24 @@
+# Generated QEMU disk images, serial logs & audio captures
+work/
+*.ext4
+
+# Local firmware dumps & backups (keep only backups/README.md)
+backups/*
+!backups/README.md
+
+# Built binaries (compiled from source via cargo & build-kernel.sh)
+Releases/
+kuyase-bins.tar.gz
+kernel/Image
+guest-init/bin/qemu-hw-bridge
+
+# Rust build artifacts
+hw-bridge/target/
+
+# OS & IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+__pycache__/
+*.pyc
