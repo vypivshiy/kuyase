@@ -1,5 +1,7 @@
-# Generated QEMU disk images, serial logs & audio captures
-work/
+# Generated QEMU disk images, serial logs & audio captures (keep empty work/.gitkeep)
+work/*
+work/.*
+!work/.gitkeep
 *.ext4
 
 # Local firmware dumps & backups (keep only backups/README.md)

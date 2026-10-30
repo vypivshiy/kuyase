@@ -14,15 +14,23 @@ if ((Split-Path -Leaf $PSScriptRoot) -eq "scripts" -and (Test-Path (Join-Path $R
     $DefaultBaseDir = (Get-Location).Path
 }
 $AdbExe = ""
-if (Test-Path (Join-Path $PSScriptRoot "adb.exe")) {
-    $AdbExe = (Join-Path $PSScriptRoot "adb.exe")
-} elseif (Test-Path ".\adb.exe") {
-    $AdbExe = (Resolve-Path ".\adb.exe").Path
-} elseif (Get-Command "adb.exe" -ErrorAction SilentlyContinue) {
-    $AdbExe = (Get-Command "adb.exe").Source
-} elseif (Test-Path "$env:LOCALAPPDATA\Microsoft\WinGet\Links\adb.exe") {
-    $AdbExe = "$env:LOCALAPPDATA\Microsoft\WinGet\Links\adb.exe"
-} else {
+$AdbCandidates = @(
+    (Join-Path $PSScriptRoot "adb.exe"),
+    ".\adb.exe",
+    $(if (Get-Command "adb.exe" -ErrorAction SilentlyContinue) { (Get-Command "adb.exe").Source } else { "" }),
+    "$env:LOCALAPPDATA\Microsoft\WinGet\Links\adb.exe",
+    "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe",
+    "$env:USERPROFILE\scoop\shims\adb.exe",
+    "C:\platform-tools\adb.exe",
+    "C:\adb\adb.exe"
+)
+foreach ($Cand in $AdbCandidates) {
+    if ($Cand -and (Test-Path $Cand)) {
+        $AdbExe = (Resolve-Path $Cand).Path
+        break
+    }
+}
+if (-not $AdbExe) {
     Write-Error "[dump] Утилита adb не найдена. Установите через: winget install Google.PlatformTools (или положите adb.exe рядом со скриптом)"
     exit 1
 }
