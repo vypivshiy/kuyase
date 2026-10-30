@@ -51,6 +51,8 @@ pub fn resolve_qemu_binary(root: &Path) -> Result<PathBuf, String> {
     let local_candidates = [
         root.join("bin").join("qemu-system-aarch64.exe"),
         root.join("bin").join("qemu-system-aarch64"),
+        root.join("Releases").join("qemu-system-aarch64.exe"),
+        root.join("Releases").join("qemu-system-aarch64"),
     ];
     for c in &local_candidates {
         if c.is_file() {
@@ -269,8 +271,22 @@ pub struct EmulatorSession {
 
 impl EmulatorSession {
     pub fn start(config: SessionConfig) -> Result<Self, String> {
-        let qemu_bin = resolve_qemu_binary(&config.root_dir)?;
-        let kernel_img = resolve_kernel_image(&config.root_dir)?;
+        Self::start_with_overrides(config, None, None)
+    }
+
+    pub fn start_with_overrides(
+        config: SessionConfig,
+        custom_qemu: Option<&Path>,
+        custom_kernel: Option<&Path>,
+    ) -> Result<Self, String> {
+        let qemu_bin = match custom_qemu {
+            Some(p) if p.is_file() => p.to_path_buf(),
+            _ => resolve_qemu_binary(&config.root_dir)?,
+        };
+        let kernel_img = match custom_kernel {
+            Some(p) if p.is_file() => p.to_path_buf(),
+            _ => resolve_kernel_image(&config.root_dir)?,
+        };
         let bridge_bin = resolve_bridge_binary(&config.root_dir)?;
 
         if !config.drive_img.is_file() {
@@ -413,6 +429,14 @@ impl EmulatorSession {
             .write_all(input.as_bytes())
             .and_then(|_| stdin.flush())
             .map_err(|e| format!("failed to write to serial stdin: {}", e))
+    }
+
+    pub fn write_serial_input(&self, input: &str) -> Result<(), String> {
+        self.send_serial_input(input)
+    }
+
+    pub fn clear_serial_lines(&self) {
+        self.serial_lines.lock().unwrap().clear();
     }
 
     pub fn serial_lines(&self) -> Vec<String> {

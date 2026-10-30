@@ -1,6 +1,7 @@
 use kuyase::adb::AdbClient;
 use kuyase::bridge_client::BridgeClient;
 use kuyase::dumper::dump_from_adb;
+use kuyase::gui::run_gui;
 use kuyase::image_builder::prepare_images;
 use kuyase::session::{resolve_repo_root, EmulatorSession, SessionConfig};
 use kuyase::test_suite::run_multi_board_tests;
@@ -16,6 +17,7 @@ fn print_usage() {
         "KUYASE — Native Smart Speaker Emulator & Verification Runner\n\
          \n\
          Usage:\n\
+           kuyase\n\
            kuyase run --headless [--board <slug>] [--mode <stub|full>] [--snapshot]\n\
            kuyase test [--board <slug>] [--snapshot]\n\
            kuyase dump <ip[:port]> [--out <dir>]\n\
@@ -70,7 +72,7 @@ fn parse_args() -> Result<CliOptions, String> {
                 print_usage();
                 process::exit(0);
             }
-            "run" | "test" | "dump" | "prepare" if opts.subcommand.is_empty() => {
+            "gui" | "run" | "test" | "dump" | "prepare" if opts.subcommand.is_empty() => {
                 opts.subcommand = args[i].clone();
                 i += 1;
             }
@@ -151,7 +153,11 @@ fn parse_args() -> Result<CliOptions, String> {
     }
 
     if opts.subcommand.is_empty() {
-        opts.subcommand = "run".to_string();
+        opts.subcommand = if opts.headless {
+            "run".to_string()
+        } else {
+            "gui".to_string()
+        };
     }
 
     Ok(opts)
@@ -279,7 +285,18 @@ fn main() {
     };
 
     let res = match opts.subcommand.as_str() {
-        "run" => run_headless_session(&opts),
+        "gui" => {
+            let root = resolve_repo_root();
+            run_gui(&root)
+        }
+        "run" => {
+            if opts.headless {
+                run_headless_session(&opts)
+            } else {
+                let root = resolve_repo_root();
+                run_gui(&root)
+            }
+        }
         "test" => {
             let root = resolve_repo_root();
             run_multi_board_tests(
