@@ -24,3 +24,7 @@ Thumbs.db
 .idea/
 __pycache__/
 *.pyc
+
+# Local markdown issue tracker
+.scratch/
+

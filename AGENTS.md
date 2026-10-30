@@ -46,3 +46,18 @@
   - Все сокеты (`aliced` `:9875`, `yio_audio` `:9850`, `iohub_services` `:9903`) используют фрейминг `[u32_le_len][QuasarMessage protobuf]` без внешних protobuf-зависимостей.
   - Инжекция голоса (`/api/voice/inject`) открывает окно перехвата `1680 мс`: получение `CANCEL_DIALOG_AND_CLEAR_QUEUE` (`6`) или `STOP_TTS` (`14`) на `:9875` подавляет штатный ответ Алисы и инкрементирует `aliced_hijack_count`.
 - **Стиль документации**: Документация репозитория (`README.md`, `API.md`, `DUMP_GUIDE.md`, `CONTEXT.md`, `AGENTS.md`, `llm.txt`) пишется технически лаконично, без эмодзи, с использованием блоков GitHub Alerts (`>[!note]`, `>[!warning]`, `>[!tip]`).
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown files under `.scratch/<feature>/` (ignored by git). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout (`CONTEXT.md` and `docs/adr/` at the repo root). See `docs/agents/domain.md`.
+
