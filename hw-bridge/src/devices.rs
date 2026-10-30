@@ -16,7 +16,7 @@
 
 use crate::leds::parse_led_pattern_str;
 use crate::state::BoardProfile;
-use serde::Serialize;
+pub use protocol::{AmplifierSlotState, UltrasoundState};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Read;
@@ -1455,29 +1455,6 @@ impl FrontDisplayDevice for OrionMatrix21x12Display {
 // ============================================================================
 // 4. Трейт аудиоподсистемы (`AudioSubsystemDevice`: 4× ACM8625S + Ultrasound TDM)
 // ============================================================================
-
-#[derive(Clone, Debug, Serialize)]
-pub struct AmplifierSlotState {
-    pub i2c_device: String,
-    pub role: String,
-    pub alsa_prefix: String,
-    pub settings_file: String,
-    pub gain_db: f32,
-    pub ramp_db: f32,
-    pub muted: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct UltrasoundState {
-    pub enabled: bool,
-    pub tdm_device: String,
-    pub sample_rate_hz: u32,
-    pub carrier_freq_hz: u32,
-    pub bandwidth_hz: u32,
-    pub channels: u32,
-    pub active: bool,
-    pub rms: u32,
-}
 
 pub struct AudioHwReadout {
     pub amplifiers: Vec<AmplifierSlotState>,

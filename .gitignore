@@ -15,6 +15,7 @@ kernel/Image
 guest-init/bin/qemu-hw-bridge
 
 # Rust build artifacts
+/target/
 hw-bridge/target/
 
 # OS & IDE files

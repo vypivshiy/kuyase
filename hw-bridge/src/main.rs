@@ -1,6 +1,6 @@
 mod audio;
+mod bridge_server;
 mod devices;
-mod http;
 mod input;
 mod ipc;
 mod leds;
@@ -59,5 +59,5 @@ fn main() {
     audio::spawn_alsa_loopback_capture(state.clone());
     input::spawn_serial_console_watcher();
 
-    http::run_server(state);
+    bridge_server::run_server(state);
 }

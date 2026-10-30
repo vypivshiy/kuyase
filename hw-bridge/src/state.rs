@@ -268,6 +268,7 @@ pub struct BridgeState {
     pub native_led_frame: Mutex<Vec<[u8; 3]>>,
     pub native_aux_frame: Mutex<Vec<[u8; 3]>>,
     pub last_spoken_text: Mutex<String>,
+    pub bridge_clients: Mutex<Vec<std::sync::mpsc::SyncSender<protocol::GuestPacket>>>,
     pub peripherals: BoardPeripherals,
 }
 
@@ -314,8 +315,20 @@ impl BridgeState {
             native_led_frame: Mutex::new(vec![[0u8; 3]; ring_leds]),
             native_aux_frame: Mutex::new(vec![[0u8; 3]; aux_zones]),
             last_spoken_text: Mutex::new(String::new()),
+            bridge_clients: Mutex::new(Vec::new()),
             peripherals,
         }
+    }
+
+    pub fn broadcast_audio_chunk(&self, pcm_chunk: Vec<u8>) {
+        let mut clients = self.bridge_clients.lock().unwrap();
+        clients.retain(|tx| {
+            match tx.try_send(protocol::GuestPacket::PcmAudioChunk(pcm_chunk.clone())) {
+                Ok(()) => true,
+                Err(std::sync::mpsc::TrySendError::Full(_)) => true,
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
+            }
+        });
     }
 
     pub fn alice_state(&self) -> AliceState {
