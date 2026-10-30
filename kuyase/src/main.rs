@@ -1,10 +1,13 @@
 use kuyase::adb::AdbClient;
 use kuyase::bridge_client::BridgeClient;
+use kuyase::dumper::dump_from_adb;
+use kuyase::image_builder::prepare_images;
 use kuyase::session::{resolve_repo_root, EmulatorSession, SessionConfig};
 use kuyase::test_suite::run_multi_board_tests;
 use serde_json::Value;
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::process;
 use std::time::Duration;
 
@@ -15,9 +18,13 @@ fn print_usage() {
          Usage:\n\
            kuyase run --headless [--board <slug>] [--mode <stub|full>] [--snapshot]\n\
            kuyase test [--board <slug>] [--snapshot]\n\
+           kuyase dump <ip[:port]> [--out <dir>]\n\
+           kuyase prepare [--board <slug>] [--dump <path>]\n\
          \n\
          Options:\n\
            -b, --board <slug>        Board profile slug (yandexmini, yandexmini2, yandexmicro, cucumber, orion, ...)\n\
+           -d, --dump <path>         Path to firmware dump archive/folder/image for `prepare`\n\
+           -o, --out <dir>           Output directory for `dump` (default: backups/dump-<board>-<timestamp>)\n\
            -m, --mode <stub|full>    Daemon mode: stub (default) or full\n\
                --headless            Boot VM in headless mode, verify duplex bridge & ADB, print telemetry, and exit\n\
                --snapshot            Enable ephemeral Clean Boot overlay (-snapshot)\n\
@@ -31,6 +38,9 @@ fn print_usage() {
 struct CliOptions {
     subcommand: String,
     board: Option<String>,
+    dump_path: Option<PathBuf>,
+    out_dir: Option<PathBuf>,
+    target: Option<String>,
     mode: String,
     headless: bool,
     snapshot: Option<bool>,
@@ -42,6 +52,9 @@ fn parse_args() -> Result<CliOptions, String> {
     let mut opts = CliOptions {
         subcommand: String::new(),
         board: None,
+        dump_path: None,
+        out_dir: None,
+        target: None,
         mode: "stub".to_string(),
         headless: false,
         snapshot: None,
@@ -80,6 +93,20 @@ fn parse_args() -> Result<CliOptions, String> {
                 opts.board = Some(val.clone());
                 i += 2;
             }
+            "-d" | "--dump" => {
+                let Some(val) = args.get(i + 1) else {
+                    return Err("missing value for --dump".to_string());
+                };
+                opts.dump_path = Some(PathBuf::from(val));
+                i += 2;
+            }
+            "-o" | "--out" => {
+                let Some(val) = args.get(i + 1) else {
+                    return Err("missing value for --out".to_string());
+                };
+                opts.out_dir = Some(PathBuf::from(val));
+                i += 2;
+            }
             "-m" | "--mode" => {
                 let Some(val) = args.get(i + 1) else {
                     return Err("missing value for --mode".to_string());
@@ -105,8 +132,16 @@ fn parse_args() -> Result<CliOptions, String> {
                     .map_err(|_| format!("invalid --adb-port: {}", val))?;
                 i += 2;
             }
-            other if !other.starts_with('-') && opts.board.is_none() => {
-                opts.board = Some(other.to_string());
+            other if !other.starts_with('-') => {
+                if opts.subcommand == "dump" && opts.target.is_none() {
+                    opts.target = Some(other.to_string());
+                } else if opts.board.is_none() {
+                    opts.board = Some(other.to_string());
+                } else if opts.dump_path.is_none() {
+                    opts.dump_path = Some(PathBuf::from(other));
+                } else {
+                    return Err(format!("unexpected positional argument: {}", other));
+                }
                 i += 1;
             }
             other => {
@@ -254,6 +289,21 @@ fn main() {
                 opts.adb_port,
                 opts.snapshot.unwrap_or(true),
             )
+        }
+        "dump" => {
+            let root = resolve_repo_root();
+            let target = opts
+                .target
+                .as_deref()
+                .or(opts.board.as_deref())
+                .ok_or_else(|| "missing speaker IP[:port] for `kuyase dump <ip[:port]>`".to_string());
+            target.and_then(|t| {
+                dump_from_adb(&root, t, opts.out_dir.as_deref()).map(|_| ())
+            })
+        }
+        "prepare" => {
+            let root = resolve_repo_root();
+            prepare_images(&root, opts.board.as_deref(), opts.dump_path.as_deref()).map(|_| ())
         }
         other => Err(format!("subcommand '{}' is not implemented yet", other)),
     };
