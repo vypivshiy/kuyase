@@ -648,6 +648,7 @@ pub fn run_board_verification(
             doa_angle: Some(90),
             mic_rms: Some(1800),
             swipe: None,
+            swipe_direction: None,
         })?;
         let sens_out = adb.shell(
             "cat /sys/class/thermal/thermal_zone0/temp; cat /sys/bus/iio/devices/iio:device0/in_illuminance_raw",

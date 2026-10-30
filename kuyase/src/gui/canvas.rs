@@ -187,6 +187,7 @@ pub fn render_twin_canvas(ui: &mut egui::Ui, app: &mut GuiAppState) {
                         temp_c: None,
                         tof_mm: None,
                         swipe: None,
+                        swipe_direction: None,
                     });
                 }
             }
@@ -329,7 +330,12 @@ fn render_hardware_controls(ui: &mut egui::Ui, app: &mut GuiAppState, st: &Bridg
                 });
             }
         }
-        for swipe_lbl in ["Swipe Left", "Swipe Right", "Swipe Up", "Swipe Down"] {
+        for (swipe_lbl, dir) in [
+            ("Swipe Left", "left"),
+            ("Swipe Right", "right"),
+            ("Swipe Up", "up"),
+            ("Swipe Down", "down"),
+        ] {
             if ui.small_button(swipe_lbl).clicked() {
                 app.send_command(HostCommand::SetSensor {
                     doa_angle: None,
@@ -338,6 +344,7 @@ fn render_hardware_controls(ui: &mut egui::Ui, app: &mut GuiAppState, st: &Bridg
                     temp_c: None,
                     tof_mm: None,
                     swipe: Some(true),
+                    swipe_direction: Some(dir.to_string()),
                 });
             }
         }
@@ -439,6 +446,7 @@ fn render_hardware_controls(ui: &mut egui::Ui, app: &mut GuiAppState, st: &Bridg
                 temp_c: None,
                 tof_mm: None,
                 swipe: None,
+                swipe_direction: None,
             });
         }
         if ui
@@ -452,6 +460,7 @@ fn render_hardware_controls(ui: &mut egui::Ui, app: &mut GuiAppState, st: &Bridg
                 temp_c: None,
                 tof_mm: Some(app.tof_slider),
                 swipe: None,
+                swipe_direction: None,
             });
         }
         if ui
@@ -465,6 +474,7 @@ fn render_hardware_controls(ui: &mut egui::Ui, app: &mut GuiAppState, st: &Bridg
                 temp_c: None,
                 tof_mm: None,
                 swipe: None,
+                swipe_direction: None,
             });
         }
         if ui
@@ -478,6 +488,7 @@ fn render_hardware_controls(ui: &mut egui::Ui, app: &mut GuiAppState, st: &Bridg
                 temp_c: Some(app.temp_slider),
                 tof_mm: None,
                 swipe: None,
+                swipe_direction: None,
             });
         }
     });

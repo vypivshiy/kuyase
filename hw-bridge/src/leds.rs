@@ -125,6 +125,17 @@ pub fn build_volume_led_frame(
     px
 }
 
+pub fn parse_rgb_hex_pattern(forced: &str) -> Option<[u8; 3]> {
+    let hex = forced.strip_prefix("rgb:")?;
+    let clean = hex.trim_start_matches('#');
+    let rgb = u32::from_str_radix(clean, 16).unwrap_or(0);
+    Some([
+        ((rgb >> 16) & 0xff) as u8,
+        ((rgb >> 8) & 0xff) as u8,
+        (rgb & 0xff) as u8,
+    ])
+}
+
 fn apply_native_frames(state: &BridgeState, ring_px: Vec<[u8; 3]>, aux_px: Option<Vec<[u8; 3]>>) {
     state.peripherals.ring.write_native_frame(&ring_px);
     *state.native_led_frame.lock().unwrap() = ring_px;
@@ -157,14 +168,7 @@ pub fn sync_immediate_led_state(state: &BridgeState) {
     }
 
     if !forced.is_empty() {
-        if let Some(hex) = forced.strip_prefix("rgb:") {
-            let clean = hex.trim_start_matches('#');
-            let rgb = u32::from_str_radix(clean, 16).unwrap_or(0);
-            let c = [
-                ((rgb >> 16) & 0xff) as u8,
-                ((rgb >> 8) & 0xff) as u8,
-                (rgb & 0xff) as u8,
-            ];
+        if let Some(c) = parse_rgb_hex_pattern(&forced) {
             let aux = if aux_zones > 0 {
                 Some(vec![c; aux_zones])
             } else {
@@ -242,14 +246,7 @@ pub fn spawn_native_led_animator(state: Arc<BridgeState>) {
             // 2. Ручной выбор паттерна / цвета из UI
             if !forced.is_empty() {
                 was_active = true;
-                if let Some(hex) = forced.strip_prefix("rgb:") {
-                    let clean = hex.trim_start_matches('#');
-                    let rgb = u32::from_str_radix(clean, 16).unwrap_or(0);
-                    let c = [
-                        ((rgb >> 16) & 0xff) as u8,
-                        ((rgb >> 8) & 0xff) as u8,
-                        (rgb & 0xff) as u8,
-                    ];
+                if let Some(c) = parse_rgb_hex_pattern(&forced) {
                     let aux = if aux_zones > 0 {
                         Some(vec![c; aux_zones])
                     } else {
@@ -362,5 +359,12 @@ mod tests {
         assert_eq!(px5[3], [0, 0, 0]);
         let px10 = build_volume_led_frame(&[], 10, 6);
         assert_eq!(px10, vec![[225, 0, 0]; 6]);
+    }
+
+    #[test]
+    fn test_parse_rgb_hex_pattern() {
+        assert_eq!(parse_rgb_hex_pattern("rgb:#00E5FF"), Some([0x00, 0xE5, 0xFF]));
+        assert_eq!(parse_rgb_hex_pattern("rgb:ff1020"), Some([0xFF, 0x10, 0x20]));
+        assert_eq!(parse_rgb_hex_pattern("listening"), None);
     }
 }

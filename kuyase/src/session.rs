@@ -269,6 +269,39 @@ pub struct EmulatorSession {
     serial_lines: Arc<Mutex<VecDeque<String>>>,
 }
 
+fn spawn_serial_reader<R: std::io::Read + Send + 'static>(
+    stream: R,
+    lines_ref: Arc<Mutex<VecDeque<String>>>,
+    log_path: PathBuf,
+    log_prefix: &'static str,
+    line_prefix: &'static str,
+) {
+    thread::spawn(move || {
+        let reader = BufReader::new(stream);
+        let mut log_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .ok();
+        for line in reader.lines().map_while(Result::ok) {
+            let clean = line.trim_end_matches('\r').to_string();
+            if let Some(ref mut f) = log_file {
+                let _ = writeln!(f, "{}{}", log_prefix, clean);
+            }
+            let mut guard = lines_ref.lock().unwrap();
+            if guard.len() >= 2000 {
+                guard.pop_front();
+            }
+            let formatted = if line_prefix.is_empty() {
+                clean
+            } else {
+                format!("{}{}", line_prefix, clean)
+            };
+            guard.push_back(formatted);
+        }
+    });
+}
+
 impl EmulatorSession {
     pub fn start(config: SessionConfig) -> Result<Self, String> {
         Self::start_with_overrides(config, None, None)
@@ -370,43 +403,17 @@ impl EmulatorSession {
         let serial_lines = Arc::new(Mutex::new(VecDeque::with_capacity(2048)));
 
         if let Some(out) = stdout {
-            let lines_ref = serial_lines.clone();
-            let log_path = serial_log_path.clone();
-            thread::spawn(move || {
-                let reader = BufReader::new(out);
-                let mut log_file = OpenOptions::new().create(true).append(true).open(log_path).ok();
-                for line in reader.lines().map_while(Result::ok) {
-                    let clean = line.trim_end_matches('\r').to_string();
-                    if let Some(ref mut f) = log_file {
-                        let _ = writeln!(f, "{}", clean);
-                    }
-                    let mut guard = lines_ref.lock().unwrap();
-                    if guard.len() >= 2000 {
-                        guard.pop_front();
-                    }
-                    guard.push_back(clean);
-                }
-            });
+            spawn_serial_reader(out, serial_lines.clone(), serial_log_path.clone(), "", "");
         }
 
         if let Some(err) = stderr {
-            let lines_ref = serial_lines.clone();
-            let log_path = serial_log_path;
-            thread::spawn(move || {
-                let reader = BufReader::new(err);
-                let mut log_file = OpenOptions::new().create(true).append(true).open(log_path).ok();
-                for line in reader.lines().map_while(Result::ok) {
-                    let clean = line.trim_end_matches('\r').to_string();
-                    if let Some(ref mut f) = log_file {
-                        let _ = writeln!(f, "[stderr] {}", clean);
-                    }
-                    let mut guard = lines_ref.lock().unwrap();
-                    if guard.len() >= 2000 {
-                        guard.pop_front();
-                    }
-                    guard.push_back(format!("[qemu] {}", clean));
-                }
-            });
+            spawn_serial_reader(
+                err,
+                serial_lines.clone(),
+                serial_log_path,
+                "[stderr] ",
+                "[qemu] ",
+            );
         }
 
         Ok(Self {
@@ -429,10 +436,6 @@ impl EmulatorSession {
             .write_all(input.as_bytes())
             .and_then(|_| stdin.flush())
             .map_err(|e| format!("failed to write to serial stdin: {}", e))
-    }
-
-    pub fn write_serial_input(&self, input: &str) -> Result<(), String> {
-        self.send_serial_input(input)
     }
 
     pub fn clear_serial_lines(&self) {

@@ -332,6 +332,7 @@ pub fn handle_host_command(state: &Arc<BridgeState>, cmd: HostCommand) -> GuestP
             temp_c,
             tof_mm,
             swipe,
+            swipe_direction,
         } => {
             if let Some(doa) = doa_angle {
                 state.doa_angle.store(doa % 360, Ordering::SeqCst);
@@ -356,13 +357,43 @@ pub fn handle_host_command(state: &Arc<BridgeState>, cmd: HostCommand) -> GuestP
                     saradc.to_string(),
                 );
             }
-            if swipe.unwrap_or(false) {
-                state.log("Inject ToF swipe gesture (140mm -> 8190mm)");
+            if swipe.unwrap_or(false) || swipe_direction.is_some() {
+                let dir = swipe_direction
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("left")
+                    .to_ascii_lowercase();
+                if doa_angle.is_none() {
+                    let cur_doa = state.doa_angle.load(Ordering::Relaxed);
+                    let next_doa = match dir.as_str() {
+                        "left" => (cur_doa + 315) % 360,
+                        "right" => (cur_doa + 45) % 360,
+                        "up" => 0,
+                        "down" => 180,
+                        _ => cur_doa,
+                    };
+                    state.doa_angle.store(next_doa, Ordering::SeqCst);
+                }
+                let dir_code: i32 = match dir.as_str() {
+                    "left" => 1,
+                    "right" => 2,
+                    "up" => 3,
+                    "down" => 4,
+                    _ => 0,
+                };
+                state.log(format!(
+                    "Inject ToF swipe gesture [{}] (140mm -> 8190mm)",
+                    dir
+                ));
                 let st = state.clone();
                 thread::spawn(move || {
                     if let Some(ref mut f) = *st.tof_uinput.lock().unwrap() {
                         emit_compat_input_event(f, 3, 0x19, 0);
                         emit_compat_input_event(f, 3, 0x12, 140);
+                        if dir_code != 0 {
+                            emit_compat_input_event(f, 3, 0x18, dir_code);
+                        }
                         emit_compat_input_event(f, 0, 0, 0);
                     }
                     st.tof_mm.store(140, Ordering::SeqCst);

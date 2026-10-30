@@ -150,6 +150,8 @@ pub enum HostCommand {
         temp_c: Option<f32>,
         tof_mm: Option<u32>,
         swipe: Option<bool>,
+        #[serde(default)]
+        swipe_direction: Option<String>,
     },
     InjectVoice {
         phrase: String,
@@ -355,6 +357,7 @@ mod tests {
                 temp_c: Some(51.4),
                 tof_mm: Some(165),
                 swipe: Some(false),
+                swipe_direction: Some("left".to_string()),
             },
             HostCommand::InjectVoice {
                 phrase: "включи ночной режим".to_string(),

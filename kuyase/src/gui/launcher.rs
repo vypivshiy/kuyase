@@ -360,6 +360,67 @@ fn spawn_adb_dump_task(app: &mut GuiAppState, target: String) {
     });
 }
 
+pub fn provision_dependencies_into_workspace(root: & std::path::Path) -> (bool, bool) {
+    let bin_dir = root.join("bin");
+    let kernel_dir = root.join("kernel");
+    let _ = fs::create_dir_all(&bin_dir);
+    let _ = fs::create_dir_all(&kernel_dir);
+
+    let qemu_bin_name = if cfg!(windows) {
+        "qemu-system-aarch64.exe"
+    } else {
+        "qemu-system-aarch64"
+    };
+    let target_qemu = bin_dir.join(qemu_bin_name);
+    if !target_qemu.is_file() {
+        if let Ok(found_q) = resolve_qemu_binary(root) {
+            if found_q != target_qemu {
+                let _ = fs::copy(&found_q, &target_qemu);
+            }
+        } else {
+            let default_url = if cfg!(windows) {
+                "https://github.com/kuyase/kuyase/releases/latest/download/qemu-system-aarch64.exe"
+            } else {
+                "https://github.com/kuyase/kuyase/releases/latest/download/qemu-system-aarch64"
+            };
+            let url =
+                std::env::var("KUYASE_QEMU_URL").unwrap_or_else(|_| default_url.to_string());
+            let _ = Command::new("curl")
+                .args(["-fL", &url, "-o", &target_qemu.display().to_string()])
+                .status();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = fs::metadata(&target_qemu) {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(0o755);
+                    let _ = fs::set_permissions(&target_qemu, perms);
+                }
+            }
+        }
+    }
+
+    let target_kernel = kernel_dir.join("Image");
+    if !target_kernel.is_file() {
+        if let Ok(found_k) = resolve_kernel_image(root) {
+            if found_k != target_kernel {
+                let _ = fs::copy(&found_k, &target_kernel);
+            }
+        } else {
+            let url = std::env::var("KUYASE_KERNEL_URL").unwrap_or_else(|_| {
+                "https://github.com/kuyase/kuyase/releases/latest/download/Image".to_string()
+            });
+            let _ = Command::new("curl")
+                .args(["-fL", &url, "-o", &target_kernel.display().to_string()])
+                .status();
+        }
+    }
+
+    let q_ok = resolve_qemu_binary(root).is_ok();
+    let k_ok = resolve_kernel_image(root).is_ok();
+    (q_ok, k_ok)
+}
+
 fn spawn_dependency_download_task(app: &mut GuiAppState) {
     if app.bg_task_running.swap(true, Ordering::SeqCst) {
         return;
@@ -370,27 +431,7 @@ fn spawn_dependency_download_task(app: &mut GuiAppState) {
     *status.lock().unwrap() = "Provisioning ./bin and ./kernel dependencies...".to_string();
 
     thread::spawn(move || {
-        let bin_dir = root.join("bin");
-        let kernel_dir = root.join("kernel");
-        let _ = fs::create_dir_all(&bin_dir);
-        let _ = fs::create_dir_all(&kernel_dir);
-
-        let target_kernel = kernel_dir.join("Image");
-        if !target_kernel.is_file() {
-            if let Ok(found_k) = resolve_kernel_image(&root) {
-                let _ = fs::copy(&found_k, &target_kernel);
-            } else {
-                let url = std::env::var("KUYASE_KERNEL_URL").unwrap_or_else(|_| {
-                    "https://github.com/kuyase/kuyase/releases/latest/download/Image".to_string()
-                });
-                let _ = Command::new("curl")
-                    .args(["-fL", &url, "-o", &target_kernel.display().to_string()])
-                    .status();
-            }
-        }
-
-        let q_ok = resolve_qemu_binary(&root).is_ok();
-        let k_ok = resolve_kernel_image(&root).is_ok();
+        let (q_ok, k_ok) = provision_dependencies_into_workspace(&root);
         *status.lock().unwrap() = format!(
             "Dependency check complete (QEMU={}, Kernel={})",
             if q_ok { "OK" } else { "MISSING" },

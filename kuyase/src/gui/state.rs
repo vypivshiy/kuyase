@@ -29,6 +29,7 @@ pub struct UiConfig {
     pub audio_muted: bool,
     pub selected_dump_path: String,
     pub active_terminal_tab: String,
+    pub tile_tree: Option<serde_json::Value>,
 }
 
 impl Default for UiConfig {
@@ -46,6 +47,7 @@ impl Default for UiConfig {
             audio_muted: false,
             selected_dump_path: String::new(),
             active_terminal_tab: "serial".to_string(),
+            tile_tree: None,
         }
     }
 }
@@ -167,6 +169,8 @@ impl GuiAppState {
         } else {
             "workbench".to_string()
         };
+        let tree = crate::gui::build_tree_for_preset(&self.config.layout_preset);
+        self.config.tile_tree = serde_json::to_value(&tree).ok();
         let _ = self.save_config();
     }
 
@@ -372,7 +376,7 @@ impl GuiAppState {
             return;
         };
         let payload = format!("{}\n", cmd_line.trim_end_matches(&['\r', '\n'][..]));
-        if let Err(e) = sess.write_serial_input(&payload) {
+        if let Err(e) = sess.send_serial_input(&payload) {
             self.status_message = format!("ttyAMA0 write failed: {}", e);
         }
     }
@@ -414,6 +418,14 @@ mod tests {
         assert_eq!(reloaded.mode, "full");
         assert!(!reloaded.clean_boot_snapshot);
         assert_eq!(reloaded.layout_preset, "compact");
+        assert!(reloaded.tile_tree.is_some());
+
+        let restored_tree: egui_tiles::Tree<crate::gui::Pane> =
+            serde_json::from_value(reloaded.tile_tree.unwrap()).unwrap();
+        assert_eq!(
+            restored_tree.id(),
+            eframe::egui::Id::new("kuyase_compact_tree")
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }

@@ -1,3 +1,7 @@
+use crate::archive_formats::{
+    extract_squashfs_into_tree, extract_ubi_into_tree, extract_ubifs_into_tree, SQUASHFS_MAGIC,
+    UBIFS_NODE_MAGIC, UBI_EC_MAGIC,
+};
 use crate::ext_fs::{read_ext2_image, write_ext2_image, EXT2_SUPER_MAGIC};
 use crate::session::{resolve_bridge_binary, EMBEDDED_HW_BRIDGE};
 use flate2::read::GzDecoder;
@@ -23,15 +27,14 @@ pub enum RootfsNodeKind {
 pub struct RootfsNode {
     pub kind: RootfsNodeKind,
     pub mode: u16,
+    pub uid: u16,
+    pub gid: u16,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RootfsTree {
     pub entries: BTreeMap<String, RootfsNode>,
 }
-
-pub type VfsTree = RootfsTree;
-pub type VfsNode = RootfsNode;
 
 pub fn normalize_rel_path(raw: &str) -> Option<String> {
     let replaced = raw.replace('\\', "/");
@@ -54,36 +57,61 @@ pub fn normalize_rel_path(raw: &str) -> Option<String> {
 
 impl RootfsTree {
     pub fn insert_dir(&mut self, path: &str, mode: u16) {
+        self.insert_dir_with_owner(path, mode, 0, 0);
+    }
+
+    pub fn insert_dir_with_owner(&mut self, path: &str, mode: u16, uid: u16, gid: u16) {
         if let Some(norm) = normalize_rel_path(path) {
             self.entries.insert(
                 norm,
                 RootfsNode {
                     kind: RootfsNodeKind::Dir,
                     mode: if mode == 0 { 0o755 } else { mode & 0o7777 },
+                    uid,
+                    gid,
                 },
             );
         }
     }
 
     pub fn insert_file(&mut self, path: &str, data: Vec<u8>, mode: u16) {
+        self.insert_file_with_owner(path, data, mode, 0, 0);
+    }
+
+    pub fn insert_file_with_owner(
+        &mut self,
+        path: &str,
+        data: Vec<u8>,
+        mode: u16,
+        uid: u16,
+        gid: u16,
+    ) {
         if let Some(norm) = normalize_rel_path(path) {
             self.entries.insert(
                 norm,
                 RootfsNode {
                     kind: RootfsNodeKind::File(data),
                     mode: if mode == 0 { 0o644 } else { mode & 0o7777 },
+                    uid,
+                    gid,
                 },
             );
         }
     }
 
     pub fn insert_symlink(&mut self, path: &str, target: String) {
+        self.insert_symlink_with_owner(path, target, 0, 0);
+    }
+
+    pub fn insert_symlink_with_owner(&mut self, path: &str, target: String, uid: u16, gid: u16) {
         if let Some(norm) = normalize_rel_path(path) {
             self.entries.insert(
                 norm,
                 RootfsNode {
                     kind: RootfsNodeKind::Symlink(target),
                     mode: 0o777,
+                    uid,
+                    gid,
                 },
             );
         }
@@ -117,11 +145,20 @@ pub fn read_tar_from_reader<R: Read>(reader: R) -> Result<RootfsTree, String> {
             continue;
         };
         let mode = (entry.header().mode().unwrap_or(0o644) as u16) & 0o7777;
+        let uid = (entry.header().uid().unwrap_or(0) & 0xFFFF) as u16;
+        let gid = (entry.header().gid().unwrap_or(0) & 0xFFFF) as u16;
         match entry.header().entry_type() {
-            EntryType::Directory => tree.insert_dir(&norm, if mode == 0 { 0o755 } else { mode }),
+            EntryType::Directory => {
+                tree.insert_dir_with_owner(&norm, if mode == 0 { 0o755 } else { mode }, uid, gid)
+            }
             EntryType::Symlink => {
                 if let Ok(Some(link)) = entry.link_name() {
-                    tree.insert_symlink(&norm, link.to_string_lossy().to_string());
+                    tree.insert_symlink_with_owner(
+                        &norm,
+                        link.to_string_lossy().to_string(),
+                        uid,
+                        gid,
+                    );
                 }
             }
             EntryType::Regular | EntryType::Continuous => {
@@ -129,12 +166,22 @@ pub fn read_tar_from_reader<R: Read>(reader: R) -> Result<RootfsTree, String> {
                 entry
                     .read_to_end(&mut buf)
                     .map_err(|e| format!("tar file read error: {}", e))?;
-                tree.insert_file(&norm, buf, if mode == 0 { 0o644 } else { mode });
+                tree.insert_file_with_owner(
+                    &norm,
+                    buf,
+                    if mode == 0 { 0o644 } else { mode },
+                    uid,
+                    gid,
+                );
             }
             _ => {}
         }
     }
     Ok(tree)
+}
+
+pub fn read_tar_into_tree<R: Read>(reader: R) -> Result<RootfsTree, String> {
+    read_tar_from_reader(reader)
 }
 
 pub fn read_tar_gz_into_tree(path: &Path) -> Result<RootfsTree, String> {
@@ -154,8 +201,8 @@ pub fn write_tree_to_tar_gz(tree: &RootfsTree, path: &Path) -> Result<(), String
 
     for (rel, node) in &tree.entries {
         let mut header = Header::new_gnu();
-        header.set_uid(0);
-        header.set_gid(0);
+        header.set_uid(node.uid as u64);
+        header.set_gid(node.gid as u64);
         header.set_mtime(0);
         match &node.kind {
             RootfsNodeKind::Dir => {
@@ -211,20 +258,7 @@ pub fn detect_board_from_tree(tree: &RootfsTree) -> String {
                     if let Some(end_q) = stripped.find('"') {
                         let dev = stripped[..end_q].trim();
                         if !dev.is_empty() {
-                            return match dev {
-                                "yandexmini_2" | "mini2" => "yandexmini2".to_string(),
-                                "station_2" | "station-midi" | "yandexmidi" => {
-                                    "station2".to_string()
-                                }
-                                "mini3" => "bergamot".to_string(),
-                                "mini3pro" => "pickle".to_string(),
-                                "lite2" => "plum".to_string(),
-                                "lite1" | "micro" => "yandexmicro".to_string(),
-                                "station3" => "orion".to_string(),
-                                "street" => "mango".to_string(),
-                                "hub" => "saturn".to_string(),
-                                other => normalize_board_slug(other),
-                            };
+                            return normalize_board_slug(dev);
                         }
                     }
                 }
@@ -241,10 +275,6 @@ pub fn detect_board_from_tree(tree: &RootfsTree) -> String {
     } else {
         "yandexmini".to_string()
     }
-}
-
-pub fn detect_board_from_vfs(tree: &VfsTree) -> String {
-    detect_board_from_tree(tree)
 }
 
 pub fn sanitize_tree(tree: &mut RootfsTree) {
@@ -346,18 +376,6 @@ pub fn sanitize_tree(tree: &mut RootfsTree) {
     }
 }
 
-pub fn sanitize_vfs(tree: &mut VfsTree) {
-    sanitize_tree(tree);
-}
-
-pub fn write_ext_image(tree: &VfsTree, output_path: &Path, size_bytes: u64) -> Result<(), String> {
-    write_ext2_image(tree, output_path, size_bytes)
-}
-
-pub fn read_ext_image_to_vfs(path: &Path) -> Result<VfsTree, String> {
-    read_ext2_image(path)
-}
-
 fn load_dump_into_tree(path: &Path) -> Result<RootfsTree, String> {
     if path.is_dir() {
         let candidates = [
@@ -440,6 +458,20 @@ fn load_dump_into_tree(path: &Path) -> Result<RootfsTree, String> {
         raw = dec;
     }
 
+    // Check UBI image ("UBI#"), SquashFS ("hsqs" 0x73717368), or UBIFS (0x06101831)
+    if raw.len() >= 4 {
+        if &raw[0..4] == UBI_EC_MAGIC {
+            return extract_ubi_into_tree(&raw);
+        }
+        let magic_le = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        if magic_le == SQUASHFS_MAGIC {
+            return extract_squashfs_into_tree(&raw);
+        }
+        if magic_le == UBIFS_NODE_MAGIC {
+            return extract_ubifs_into_tree(&raw);
+        }
+    }
+
     // Check ext2/ext4 magic at offset 1080
     if raw.len() >= 2048 && u16::from_le_bytes([raw[1080], raw[1081]]) == EXT2_SUPER_MAGIC {
         let tmp = std::env::temp_dir().join(format!("kuyase-ext-in-{}.img", std::process::id()));
@@ -449,7 +481,17 @@ fn load_dump_into_tree(path: &Path) -> Result<RootfsTree, String> {
         return res;
     }
 
-    // Check if UBI image (magic "UBI#") or raw image containing an embedded gzip/tar/ext payload
+    // Check if raw image contains an embedded UBIFS / SquashFS / gzip / tar payload
+    if raw.windows(4).any(|w| w == [0x31, 0x18, 0x10, 0x06]) {
+        if let Ok(t) = extract_ubifs_into_tree(&raw) {
+            return Ok(t);
+        }
+    }
+    if let Some(pos) = raw.windows(4).position(|w| w == b"hsqs") {
+        if let Ok(t) = extract_squashfs_into_tree(&raw[pos..]) {
+            return Ok(t);
+        }
+    }
     if let Some(pos) = raw.windows(2).position(|w| w == [0x1f, 0x8b]) {
         let mut dec = Vec::new();
         if GzDecoder::new(Cursor::new(&raw[pos..])).read_to_end(&mut dec).is_ok() {
@@ -654,7 +696,13 @@ mod tests {
             br#"{"deviceType": "mini2"}"#.to_vec(),
             0o644,
         );
-        dump_tree.insert_file("bin/busybox", b"\x7fELFbusybox".to_vec(), 0o755);
+        dump_tree.insert_file_with_owner(
+            "bin/busybox",
+            b"\x7fELFbusybox".to_vec(),
+            0o755,
+            1000,
+            1005,
+        );
         dump_tree.insert_symlink("bin/sh", "busybox".to_string());
         dump_tree.insert_file("etc/wpa_supplicant.conf", b"psk=secret".to_vec(), 0o600);
         dump_tree.insert_file("data/secret.txt", b"token=123".to_vec(), 0o600);
@@ -673,12 +721,15 @@ mod tests {
         assert!(out_img.is_file());
 
         // Read back the generated .ext4 image and verify invariants
-        let readback = read_ext_image_to_vfs(&out_img).unwrap();
-        assert_eq!(detect_board_from_vfs(&readback), "yandexmini2");
+        let readback = read_ext2_image(&out_img).unwrap();
+        assert_eq!(detect_board_from_tree(&readback), "yandexmini2");
         assert!(readback.get("etc/wpa_supplicant.conf").is_none());
         assert!(readback.get("data/secret.txt").is_none());
         assert!(readback.get("usr/local/bin/dropbear").is_none());
         assert!(readback.get("var/auth.sqlite3").is_none());
+        let bb_node = readback.get("bin/busybox").unwrap();
+        assert_eq!(bb_node.uid, 1000);
+        assert_eq!(bb_node.gid, 1005);
 
         let init_bytes = readback.get_file_bytes("quasar-qemu-init.sh").unwrap();
         assert!(!init_bytes.contains(&b'\r'));

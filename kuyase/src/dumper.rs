@@ -32,20 +32,7 @@ pub struct DumpResult {
 pub fn detect_board_slug_from_probe(dev_type_cfg: &str, model_raw: &str) -> String {
     let dev = dev_type_cfg.trim();
     if !dev.is_empty() && !dev.eq_ignore_ascii_case("unknown") {
-        return match dev {
-            "cucumber" => "cucumber".to_string(),
-            "bergamot" | "mini3" => "bergamot".to_string(),
-            "pickle" | "mini3pro" => "pickle".to_string(),
-            "orion" | "station3" => "orion".to_string(),
-            "plum" | "lite2" => "plum".to_string(),
-            "mango" | "street" => "mango".to_string(),
-            "saturn" | "hub" => "saturn".to_string(),
-            "station_2" | "station-midi" | "yandexmidi" | "station2" => "station2".to_string(),
-            "yandexmini_2" | "mini2" | "yandexmini2" => "yandexmini2".to_string(),
-            "yandexmicro" | "lite1" | "micro" => "yandexmicro".to_string(),
-            "yandexmini" | "mini1" => "yandexmini".to_string(),
-            other => normalize_board_slug(other),
-        };
+        return normalize_board_slug(dev);
     }
 
     let model_lc = model_raw.to_ascii_lowercase();

@@ -1,4 +1,5 @@
 pub mod adb;
+pub mod archive_formats;
 pub mod bridge_client;
 pub mod dumper;
 pub mod ext_fs;

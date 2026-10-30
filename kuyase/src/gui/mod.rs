@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Pane {
     Launcher,
     TwinCanvas,
@@ -81,9 +81,16 @@ pub struct KuyaseGuiApp {
 
 impl KuyaseGuiApp {
     pub fn new(root_dir: &Path) -> Self {
-        let state = GuiAppState::new(root_dir);
+        let mut state = GuiAppState::new(root_dir);
         let active_preset = state.config.layout_preset.clone();
-        let tree = build_tree_for_preset(&active_preset);
+        let tree = state
+            .config
+            .tile_tree
+            .as_ref()
+            .and_then(|v| serde_json::from_value::<egui_tiles::Tree<Pane>>(v.clone()).ok())
+            .unwrap_or_else(|| build_tree_for_preset(&active_preset));
+        state.config.tile_tree = serde_json::to_value(&tree).ok();
+        let _ = state.save_config();
         Self {
             state,
             tree,
@@ -185,6 +192,8 @@ impl eframe::App for KuyaseGuiApp {
         if self.state.config.layout_preset != self.active_preset {
             self.active_preset = self.state.config.layout_preset.clone();
             self.tree = build_tree_for_preset(&self.active_preset);
+            self.state.config.tile_tree = serde_json::to_value(&self.tree).ok();
+            let _ = self.state.save_config();
         }
 
         if self.state.session.is_some()
@@ -204,10 +213,17 @@ impl eframe::App for KuyaseGuiApp {
             };
             self.tree.ui(&mut behavior, ui);
         });
+
+        let current_tree_json = serde_json::to_value(&self.tree).ok();
+        if current_tree_json != self.state.config.tile_tree {
+            self.state.config.tile_tree = current_tree_json;
+            let _ = self.state.save_config();
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.state.stop_vm();
+        self.state.config.tile_tree = serde_json::to_value(&self.tree).ok();
         let _ = self.state.save_config();
     }
 }

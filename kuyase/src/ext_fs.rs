@@ -6,6 +6,9 @@ use std::path::Path;
 
 pub const BLOCK_SIZE: usize = 4096;
 pub const EXT2_SUPER_MAGIC: u16 = 0xEF53;
+pub const EXT4_EXTENTS_FL: u32 = 0x0008_0000;
+pub const EXT4_EXTENT_MAGIC: u16 = 0xF30A;
+pub const EXT4_FEATURE_INCOMPAT_64BIT: u32 = 0x0080;
 const INODE_SIZE: usize = 128;
 const BLOCKS_PER_GROUP: u32 = 32768;
 const INODES_PER_GROUP: u32 = 2048;
@@ -23,6 +26,8 @@ struct InodeSpec {
     ino: u32,
     parent_ino: u32,
     mode: u16,
+    uid: u16,
+    gid: u16,
     file_type: u8,
     data: Vec<u8>,
     symlink: Option<String>,
@@ -109,6 +114,8 @@ pub fn write_ext2_image(
             ino: 2,
             parent_ino: 2,
             mode: S_IFDIR | 0o755,
+            uid: 0,
+            gid: 0,
             file_type: FT_DIR,
             data: Vec::new(),
             symlink: None,
@@ -139,6 +146,8 @@ pub fn write_ext2_image(
                 ino,
                 parent_ino,
                 mode,
+                uid: node.uid,
+                gid: node.gid,
                 file_type: ft,
                 data,
                 symlink,
@@ -262,6 +271,8 @@ pub fn write_ext2_image(
 
         let mut raw_inode = [0u8; INODE_SIZE];
         raw_inode[0..2].copy_from_slice(&spec.mode.to_le_bytes());
+        raw_inode[2..4].copy_from_slice(&spec.uid.to_le_bytes());
+        raw_inode[24..26].copy_from_slice(&spec.gid.to_le_bytes());
 
         let (payload, size_bytes, links_count): (Vec<u8>, u32, u16) = if spec.file_type == FT_DIR {
             let dir_bytes = encode_dir_blocks(spec.ino, spec.parent_ino, &spec.children);
@@ -415,116 +426,219 @@ pub fn read_ext2_image(path: &Path) -> Result<RootfsTree, String> {
     } else {
         128
     };
+    let feature_incompat = u32::from_le_bytes([sb[96], sb[97], sb[98], sb[99]]);
+    let desc_size = if (feature_incompat & EXT4_FEATURE_INCOMPAT_64BIT) != 0 {
+        let s_desc_size = u16::from_le_bytes([sb[254], sb[255]]) as usize;
+        if s_desc_size >= 32 {
+            s_desc_size
+        } else {
+            32
+        }
+    } else {
+        32
+    };
     let gdt_offset = if blk_size == 1024 { 2048u64 } else { blk_size as u64 };
 
-    let read_inode = |file: &mut File, ino: u32| -> Result<(u16, u32, [u8; 60]), String> {
-        let g = (ino - 1) / inodes_per_group;
-        let idx = (ino - 1) % inodes_per_group;
-        let mut gd = [0u8; 32];
-        file.seek(SeekFrom::Start(gdt_offset + g as u64 * 32))
-            .and_then(|_| file.read_exact(&mut gd))
-            .map_err(|e| e.to_string())?;
-        let itable = u32::from_le_bytes([gd[8], gd[9], gd[10], gd[11]]) as u64;
-        let mut raw = vec![0u8; inode_size];
-        file.seek(SeekFrom::Start(itable * blk_size as u64 + idx as u64 * inode_size as u64))
+    let read_inode =
+        |file: &mut File, ino: u32| -> Result<(u16, u16, u16, u32, u32, [u8; 60]), String> {
+            let g = (ino - 1) / inodes_per_group;
+            let idx = (ino - 1) % inodes_per_group;
+            let mut gd = vec![0u8; desc_size];
+            file.seek(SeekFrom::Start(gdt_offset + g as u64 * desc_size as u64))
+                .and_then(|_| file.read_exact(&mut gd))
+                .map_err(|e| e.to_string())?;
+            let itable_lo = u32::from_le_bytes([gd[8], gd[9], gd[10], gd[11]]) as u64;
+            let itable_hi = if desc_size >= 64 {
+                u32::from_le_bytes([gd[40], gd[41], gd[42], gd[43]]) as u64
+            } else {
+                0
+            };
+            let itable = itable_lo | (itable_hi << 32);
+            let mut raw = vec![0u8; inode_size];
+            file.seek(SeekFrom::Start(
+                itable * blk_size as u64 + idx as u64 * inode_size as u64,
+            ))
             .and_then(|_| file.read_exact(&mut raw))
             .map_err(|e| e.to_string())?;
-        let mode = u16::from_le_bytes([raw[0], raw[1]]);
-        let size = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
-        let mut i_block = [0u8; 60];
-        i_block.copy_from_slice(&raw[40..100]);
-        Ok((mode, size, i_block))
-    };
+            let mode = u16::from_le_bytes([raw[0], raw[1]]);
+            let uid = u16::from_le_bytes([raw[2], raw[3]]);
+            let size = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
+            let gid = u16::from_le_bytes([raw[24], raw[25]]);
+            let flags = u32::from_le_bytes([raw[32], raw[33], raw[34], raw[35]]);
+            let mut i_block = [0u8; 60];
+            i_block.copy_from_slice(&raw[40..100]);
+            Ok((mode, uid, gid, size, flags, i_block))
+        };
 
-    let read_inode_data =
-        |file: &mut File, size: u32, i_block: &[u8; 60]| -> Result<Vec<u8>, String> {
-            let mut ptrs = [0u32; 15];
-            for i in 0..15 {
-                ptrs[i] = u32::from_le_bytes([
-                    i_block[i * 4],
-                    i_block[i * 4 + 1],
-                    i_block[i * 4 + 2],
-                    i_block[i * 4 + 3],
-                ]);
+    fn collect_extents(
+        file: &mut File,
+        node_bytes: &[u8],
+        blk_size: usize,
+        out_extents: &mut Vec<(u32, u16, u64)>,
+    ) -> Result<(), String> {
+        if node_bytes.len() < 12 {
+            return Err("extent node too short".to_string());
+        }
+        let eh_magic = u16::from_le_bytes([node_bytes[0], node_bytes[1]]);
+        if eh_magic != EXT4_EXTENT_MAGIC {
+            return Err(format!("invalid ext4 extent magic: 0x{:04x}", eh_magic));
+        }
+        let eh_entries = u16::from_le_bytes([node_bytes[2], node_bytes[3]]) as usize;
+        let eh_depth = u16::from_le_bytes([node_bytes[6], node_bytes[7]]);
+        for idx in 0..eh_entries {
+            let off = 12 + idx * 12;
+            if off + 12 > node_bytes.len() {
+                break;
             }
-            let needed_blks = (size as usize + blk_size - 1) / blk_size;
-            let mut blk_nums = Vec::with_capacity(needed_blks);
-            for &b in ptrs.iter().take(12) {
-                if blk_nums.len() < needed_blks && b != 0 {
+            let entry = &node_bytes[off..off + 12];
+            if eh_depth == 0 {
+                let ee_block = u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
+                let ee_len = u16::from_le_bytes([entry[4], entry[5]]);
+                let ee_start_hi = u16::from_le_bytes([entry[6], entry[7]]) as u64;
+                let ee_start_lo =
+                    u32::from_le_bytes([entry[8], entry[9], entry[10], entry[11]]) as u64;
+                let start_phys = ee_start_lo | (ee_start_hi << 32);
+                out_extents.push((ee_block, ee_len, start_phys));
+            } else {
+                let ei_leaf_lo =
+                    u32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]) as u64;
+                let ei_leaf_hi = u16::from_le_bytes([entry[8], entry[9]]) as u64;
+                let child_blk = ei_leaf_lo | (ei_leaf_hi << 32);
+                let mut child_buf = vec![0u8; blk_size];
+                file.seek(SeekFrom::Start(child_blk * blk_size as u64))
+                    .and_then(|_| file.read_exact(&mut child_buf))
+                    .map_err(|e| e.to_string())?;
+                collect_extents(file, &child_buf, blk_size, out_extents)?;
+            }
+        }
+        Ok(())
+    }
+
+    let read_inode_data = |file: &mut File,
+                           size: u32,
+                           flags: u32,
+                           i_block: &[u8; 60]|
+     -> Result<Vec<u8>, String> {
+        if (flags & EXT4_EXTENTS_FL) != 0
+            && u16::from_le_bytes([i_block[0], i_block[1]]) == EXT4_EXTENT_MAGIC
+        {
+            let mut extents = Vec::new();
+            collect_extents(file, i_block, blk_size, &mut extents)?;
+            let mut out = vec![0u8; size as usize];
+            let mut buf = vec![0u8; blk_size];
+            for (ee_block, ee_len, start_phys) in extents {
+                let uninit = ee_len > 32768;
+                let len_blks = if uninit {
+                    (ee_len - 32768) as usize
+                } else {
+                    ee_len as usize
+                };
+                if uninit {
+                    continue;
+                }
+                for b_idx in 0..len_blks {
+                    let logical_blk = (ee_block as usize) + b_idx;
+                    let byte_off = logical_blk * blk_size;
+                    if byte_off >= size as usize {
+                        break;
+                    }
+                    file.seek(SeekFrom::Start((start_phys + b_idx as u64) * blk_size as u64))
+                        .and_then(|_| file.read_exact(&mut buf))
+                        .map_err(|e| e.to_string())?;
+                    let take = (size as usize - byte_off).min(blk_size);
+                    out[byte_off..byte_off + take].copy_from_slice(&buf[..take]);
+                }
+            }
+            return Ok(out);
+        }
+
+        let mut ptrs = [0u32; 15];
+        for i in 0..15 {
+            ptrs[i] = u32::from_le_bytes([
+                i_block[i * 4],
+                i_block[i * 4 + 1],
+                i_block[i * 4 + 2],
+                i_block[i * 4 + 3],
+            ]);
+        }
+        let needed_blks = (size as usize + blk_size - 1) / blk_size;
+        let mut blk_nums = Vec::with_capacity(needed_blks);
+        for &b in ptrs.iter().take(12) {
+            if blk_nums.len() < needed_blks && b != 0 {
+                blk_nums.push(b);
+            }
+        }
+        let ptrs_per_blk = blk_size / 4;
+        if blk_nums.len() < needed_blks && ptrs[12] != 0 {
+            let mut ind = vec![0u8; blk_size];
+            file.seek(SeekFrom::Start(ptrs[12] as u64 * blk_size as u64))
+                .and_then(|_| file.read_exact(&mut ind))
+                .map_err(|e| e.to_string())?;
+            for i in 0..ptrs_per_blk {
+                if blk_nums.len() >= needed_blks {
+                    break;
+                }
+                let b = u32::from_le_bytes([ind[i * 4], ind[i * 4 + 1], ind[i * 4 + 2], ind[i * 4 + 3]]);
+                if b != 0 {
                     blk_nums.push(b);
                 }
             }
-            let ptrs_per_blk = blk_size / 4;
-            if blk_nums.len() < needed_blks && ptrs[12] != 0 {
-                let mut ind = vec![0u8; blk_size];
-                file.seek(SeekFrom::Start(ptrs[12] as u64 * blk_size as u64))
-                    .and_then(|_| file.read_exact(&mut ind))
+        }
+        if blk_nums.len() < needed_blks && ptrs[13] != 0 {
+            let mut dind = vec![0u8; blk_size];
+            file.seek(SeekFrom::Start(ptrs[13] as u64 * blk_size as u64))
+                .and_then(|_| file.read_exact(&mut dind))
+                .map_err(|e| e.to_string())?;
+            for c in 0..ptrs_per_blk {
+                if blk_nums.len() >= needed_blks {
+                    break;
+                }
+                let sind_blk = u32::from_le_bytes([
+                    dind[c * 4],
+                    dind[c * 4 + 1],
+                    dind[c * 4 + 2],
+                    dind[c * 4 + 3],
+                ]);
+                if sind_blk == 0 {
+                    continue;
+                }
+                let mut sind = vec![0u8; blk_size];
+                file.seek(SeekFrom::Start(sind_blk as u64 * blk_size as u64))
+                    .and_then(|_| file.read_exact(&mut sind))
                     .map_err(|e| e.to_string())?;
                 for i in 0..ptrs_per_blk {
                     if blk_nums.len() >= needed_blks {
                         break;
                     }
-                    let b = u32::from_le_bytes([ind[i * 4], ind[i * 4 + 1], ind[i * 4 + 2], ind[i * 4 + 3]]);
+                    let b = u32::from_le_bytes([
+                        sind[i * 4],
+                        sind[i * 4 + 1],
+                        sind[i * 4 + 2],
+                        sind[i * 4 + 3],
+                    ]);
                     if b != 0 {
                         blk_nums.push(b);
                     }
                 }
             }
-            if blk_nums.len() < needed_blks && ptrs[13] != 0 {
-                let mut dind = vec![0u8; blk_size];
-                file.seek(SeekFrom::Start(ptrs[13] as u64 * blk_size as u64))
-                    .and_then(|_| file.read_exact(&mut dind))
-                    .map_err(|e| e.to_string())?;
-                for c in 0..ptrs_per_blk {
-                    if blk_nums.len() >= needed_blks {
-                        break;
-                    }
-                    let sind_blk = u32::from_le_bytes([
-                        dind[c * 4],
-                        dind[c * 4 + 1],
-                        dind[c * 4 + 2],
-                        dind[c * 4 + 3],
-                    ]);
-                    if sind_blk == 0 {
-                        continue;
-                    }
-                    let mut sind = vec![0u8; blk_size];
-                    file.seek(SeekFrom::Start(sind_blk as u64 * blk_size as u64))
-                        .and_then(|_| file.read_exact(&mut sind))
-                        .map_err(|e| e.to_string())?;
-                    for i in 0..ptrs_per_blk {
-                        if blk_nums.len() >= needed_blks {
-                            break;
-                        }
-                        let b = u32::from_le_bytes([
-                            sind[i * 4],
-                            sind[i * 4 + 1],
-                            sind[i * 4 + 2],
-                            sind[i * 4 + 3],
-                        ]);
-                        if b != 0 {
-                            blk_nums.push(b);
-                        }
-                    }
-                }
-            }
-            let mut out = Vec::with_capacity(size as usize);
-            let mut buf = vec![0u8; blk_size];
-            for b in blk_nums {
-                file.seek(SeekFrom::Start(b as u64 * blk_size as u64))
-                    .and_then(|_| file.read_exact(&mut buf))
-                    .map_err(|e| e.to_string())?;
-                let take = (size as usize - out.len()).min(blk_size);
-                out.extend_from_slice(&buf[..take]);
-            }
-            Ok(out)
-        };
+        }
+        let mut out = Vec::with_capacity(size as usize);
+        let mut buf = vec![0u8; blk_size];
+        for b in blk_nums {
+            file.seek(SeekFrom::Start(b as u64 * blk_size as u64))
+                .and_then(|_| file.read_exact(&mut buf))
+                .map_err(|e| e.to_string())?;
+            let take = (size as usize - out.len()).min(blk_size);
+            out.extend_from_slice(&buf[..take]);
+        }
+        Ok(out)
+    };
 
     let mut tree = RootfsTree::default();
     let mut stack = vec![(2u32, String::new())];
     while let Some((dir_ino, prefix)) = stack.pop() {
-        let (_, size, i_block) = read_inode(&mut file, dir_ino)?;
-        let dir_bytes = read_inode_data(&mut file, size, &i_block)?;
+        let (_, _, _, size, flags, i_block) = read_inode(&mut file, dir_ino)?;
+        let dir_bytes = read_inode_data(&mut file, size, flags, &i_block)?;
         let mut off = 0usize;
         while off + 8 <= dir_bytes.len() {
             let e_ino = u32::from_le_bytes([
@@ -546,23 +660,25 @@ pub fn read_ext2_image(path: &Path) -> Result<RootfsTree, String> {
                     } else {
                         format!("{}/{}", prefix, name)
                     };
-                    let (imode, isize, iblk) = read_inode(&mut file, e_ino)?;
+                    let (imode, iuid, igid, isize, iflags, iblk) = read_inode(&mut file, e_ino)?;
                     let fmt = imode & 0xF000;
                     let perm = imode & 0o7777;
                     if fmt == S_IFDIR {
-                        tree.insert_dir(&rel, perm);
+                        tree.insert_dir_with_owner(&rel, perm, iuid, igid);
                         stack.push((e_ino, rel));
                     } else if fmt == S_IFLNK {
-                        let target = if (isize as usize) < 60 {
+                        let is_extent = (iflags & EXT4_EXTENTS_FL) != 0
+                            && u16::from_le_bytes([iblk[0], iblk[1]]) == EXT4_EXTENT_MAGIC;
+                        let target = if (isize as usize) < 60 && !is_extent {
                             String::from_utf8_lossy(&iblk[..isize as usize]).to_string()
                         } else {
-                            let bytes = read_inode_data(&mut file, isize, &iblk)?;
+                            let bytes = read_inode_data(&mut file, isize, iflags, &iblk)?;
                             String::from_utf8_lossy(&bytes).to_string()
                         };
-                        tree.insert_symlink(&rel, target);
+                        tree.insert_symlink_with_owner(&rel, target, iuid, igid);
                     } else if fmt == S_IFREG {
-                        let bytes = read_inode_data(&mut file, isize, &iblk)?;
-                        tree.insert_file(&rel, bytes, perm);
+                        let bytes = read_inode_data(&mut file, isize, iflags, &iblk)?;
+                        tree.insert_file_with_owner(&rel, bytes, perm, iuid, igid);
                     }
                 }
             }
@@ -570,4 +686,91 @@ pub fn read_ext2_image(path: &Path) -> Result<RootfsTree, String> {
         }
     }
     Ok(tree)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_ext4_extents_and_64bit_group_descriptors_and_uid_gid() {
+        let tmp_img = std::env::temp_dir().join(format!(
+            "kuyase-ext4-extents-test-{}.img",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&tmp_img);
+
+        let mut src_tree = RootfsTree::default();
+        src_tree.insert_dir_with_owner("etc", 0o750, 100, 200);
+        src_tree.insert_file_with_owner(
+            "etc/owned.conf",
+            b"owner-test".to_vec(),
+            0o640,
+            1001,
+            1002,
+        );
+        write_ext2_image(&src_tree, &tmp_img, 16 * 1024 * 1024).unwrap();
+
+        // Now patch the image in-place to use:
+        // 1) 64-byte group descriptor (INCOMPAT_64BIT = 0x0080, s_desc_size = 64)
+        // 2) EXT4_EXTENTS_FL (0x00080000) + eh_magic 0xF30A on inode 12 ("etc/owned.conf"):
+        //    use an internal index node (eh_depth = 1) pointing to an external leaf extent block!
+        let mut raw = fs::read(&tmp_img).unwrap();
+
+        // Enable INCOMPAT_64BIT (0x0080) and s_desc_size = 64 in superblock (at 1024)
+        let incompat = u32::from_le_bytes([raw[1024 + 96], raw[1024 + 97], raw[1024 + 98], raw[1024 + 99]]);
+        raw[1024 + 96..1024 + 100].copy_from_slice(&(incompat | EXT4_FEATURE_INCOMPAT_64BIT).to_le_bytes());
+        raw[1024 + 254..1024 + 256].copy_from_slice(&64u16.to_le_bytes());
+
+        // Read inode table block from GDT group 0 (block 1 = offset 4096)
+        let itable_blk = u32::from_le_bytes([raw[4096 + 8], raw[4096 + 9], raw[4096 + 10], raw[4096 + 11]]) as usize;
+        // Locate inode 12 ("etc/owned.conf"): index = 12 - 1 = 11
+        let ino12_off = itable_blk * BLOCK_SIZE + 11 * INODE_SIZE;
+        let orig_data_blk = u32::from_le_bytes([
+            raw[ino12_off + 40],
+            raw[ino12_off + 41],
+            raw[ino12_off + 42],
+            raw[ino12_off + 43],
+        ]);
+
+        // Use block 3000 as an external extent leaf node (eh_depth = 0, eh_entries = 1 -> orig_data_blk)
+        let ext_leaf_blk = 3000usize;
+        let leaf_off = ext_leaf_blk * BLOCK_SIZE;
+        raw[leaf_off..leaf_off + 2].copy_from_slice(&EXT4_EXTENT_MAGIC.to_le_bytes());
+        raw[leaf_off + 2..leaf_off + 4].copy_from_slice(&1u16.to_le_bytes()); // eh_entries = 1
+        raw[leaf_off + 4..leaf_off + 6].copy_from_slice(&340u16.to_le_bytes()); // eh_max
+        raw[leaf_off + 6..leaf_off + 8].copy_from_slice(&0u16.to_le_bytes()); // eh_depth = 0 (leaf)
+        // Leaf ext4_extent at leaf_off + 12
+        raw[leaf_off + 12..leaf_off + 16].copy_from_slice(&0u32.to_le_bytes()); // ee_block = 0
+        raw[leaf_off + 16..leaf_off + 18].copy_from_slice(&1u16.to_le_bytes()); // ee_len = 1
+        raw[leaf_off + 18..leaf_off + 20].copy_from_slice(&0u16.to_le_bytes()); // ee_start_hi = 0
+        raw[leaf_off + 20..leaf_off + 24].copy_from_slice(&orig_data_blk.to_le_bytes()); // ee_start_lo
+
+        // Set EXT4_EXTENTS_FL on inode 12 and write eh_depth = 1 internal extent_idx in i_block[0..24]
+        raw[ino12_off + 32..ino12_off + 36].copy_from_slice(&EXT4_EXTENTS_FL.to_le_bytes());
+        raw[ino12_off + 40..ino12_off + 100].fill(0);
+        raw[ino12_off + 40..ino12_off + 42].copy_from_slice(&EXT4_EXTENT_MAGIC.to_le_bytes());
+        raw[ino12_off + 42..ino12_off + 44].copy_from_slice(&1u16.to_le_bytes()); // eh_entries = 1
+        raw[ino12_off + 44..ino12_off + 46].copy_from_slice(&4u16.to_le_bytes()); // eh_max = 4
+        raw[ino12_off + 46..ino12_off + 48].copy_from_slice(&1u16.to_le_bytes()); // eh_depth = 1 (internal idx)
+        // ext4_extent_idx at ino12_off + 52
+        raw[ino12_off + 52..ino12_off + 56].copy_from_slice(&0u32.to_le_bytes()); // ei_block = 0
+        raw[ino12_off + 56..ino12_off + 60].copy_from_slice(&(ext_leaf_blk as u32).to_le_bytes()); // ei_leaf_lo
+
+        fs::write(&tmp_img, &raw).unwrap();
+
+        let parsed = read_ext2_image(&tmp_img).unwrap();
+        let etc_dir = parsed.get("etc").unwrap();
+        assert_eq!(etc_dir.mode, 0o750);
+        assert_eq!(etc_dir.uid, 100);
+        assert_eq!(etc_dir.gid, 200);
+
+        let owned = parsed.get("etc/owned.conf").unwrap();
+        assert_eq!(owned.mode, 0o640);
+        assert_eq!(owned.uid, 1001);
+        assert_eq!(owned.gid, 1002);
+        assert_eq!(parsed.get_file_bytes("etc/owned.conf").unwrap(), b"owner-test");
+
+        let _ = fs::remove_file(&tmp_img);
+    }
 }
