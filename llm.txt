@@ -1,35 +1,41 @@
 # KUYASE (К.У.Я.С.Э.) — Кустарный Универсальный Яндекс Станции Эмулятор
 
-> Hardware-in-the-loop QEMU (`qemu-system-aarch64`) emulator for Yandex Station smart speakers running Linux Buildroot firmware (Amlogic SoCs). Provides kernel/userspace peripheral emulation (`SN3236` I2C LEDs, `vfb` framebuffers, `sysfs` LEDs/clocks, `uinput` buttons/ToF, `IIO`/`thermal` sensors, `snd-aloop` ALSA audio), local Quasar Protobuf IPC stubs (`aliced` `:9875`, `yio_audio` `:9850`, `iohub_services` `:9903`), ADB root access (`:15555`), and the `Virtual Speaker Twin` web visualizer + REST API (`:18091`).
+> Native cross-platform desktop application (`eframe`/`egui` + `egui_tiles`) and CLI hardware-in-the-loop QEMU (`qemu-system-aarch64`) emulator for Yandex Station smart speakers running Linux Buildroot firmware (Amlogic SoCs). Provides kernel/userspace peripheral emulation (`SN3236` I2C LEDs, `vfb` framebuffers, `sysfs` LEDs/clocks, `uinput` buttons/ToF, `IIO`/`thermal` sensors, `snd-aloop` ALSA audio), local Quasar Protobuf IPC stubs (`aliced` `:9875`, `yio_audio` `:9850`, `iohub_services` `:9903`), ADB root access (`:15555`), a userspace `.ext4` image builder, a built-in Rust ADB client (`:5555`), and the 60 FPS `Virtual Speaker Twin` desktop workspace connected over a duplex TCP stream (`:18091 -> :8091`).
 
 ## Documentation Index
 
-- [README.md](./README.md): Overview of emulated subsystems, supported/unsupported device tables, source build instructions (Linux/WSL2), and launch commands.
-- [CONTEXT.md](./CONTEXT.md): Canonical domain glossary (`Board Profile`, `Board Peripherals`, `Firmware Dump`, `Guest Image`, `Hardware Bridge`, `Virtual Speaker Twin`, `Register Latch`, `Trigger Conflict`, `Hijack Window`, `Formant TTS Synthesizer`).
-- [API.md](./API.md): Complete HTTP REST API reference for `qemu-hw-bridge` (`http://127.0.0.1:18091`).
-- [DUMP_GUIDE.md](./DUMP_GUIDE.md): Extracting clean `rootfs.tar.gz` dumps over network ADB (`:5555`).
+- [README.md](./README.md): Overview of Cargo Workspace architecture, emulated subsystems, supported/unsupported device tables, source build instructions (Windows/Linux), and GUI/CLI commands.
+- [CONTEXT.md](./CONTEXT.md): Canonical domain glossary (`Board Profile`, `Board Peripherals`, `Firmware Dump`, `Guest Image`, `Hardware Bridge`, `Virtual Speaker Twin`, `Register Latch`, `Stealth Lock`, `Trigger Conflict`, `Hijack Window`, `Formant TTS Synthesizer`).
+- [protocol/src/lib.rs](./protocol/src/lib.rs): Duplex TCP bridge protocol contracts (`[u8 kind][u32_le len][payload]` on `:8091` / `:18091`), `BridgeStateSnapshot`, `HostCommand`, and `GuestPacket`.
+- [DUMP_GUIDE.md](./DUMP_GUIDE.md): Extracting clean `rootfs.tar.gz` dumps over network ADB (`:5555`) via `kuyase dump` and building `.ext4` images in userspace via `kuyase prepare`.
 - [AGENTS.md](./AGENTS.md): Agent workflow rules, cross-compilation/injection pipeline, and hardware emulation invariants.
 
-## Repository Layout
+## Repository Layout (3-Crate Cargo Workspace)
 
-- `hw-bridge/`: Rust source for the guest `qemu-hw-bridge` daemon (compiled statically for `armv7-unknown-linux-musleabihf` via `rust-lld` so one binary runs on both 32-bit `armhf` and 64-bit `aarch64` guests).
+- `protocol/`: Shared protocol crate compiled for both host (`x86_64`/`aarch64`) and guest (`armv7-unknown-linux-musleabihf`).
+  - `protocol/src/lib.rs`: `BridgeStateSnapshot`, `AmplifierSlotState`, `UltrasoundState`, `HostCommand`, `GuestPacket` (`StateSnapshot`, `PcmAudioChunk`, `CommandAck`), length-prefixed framing (`[u8 kind][u32_le len][payload]`), WAV builder, and `normalize_board_slug`.
+- `hw-bridge/`: Guest `qemu-hw-bridge` daemon crate (statically compiled for `armv7-unknown-linux-musleabihf` via `rust-lld` so one binary runs on both 32-bit `armhf` and 64-bit `aarch64` guests).
   - `hw-bridge/src/main.rs`: Entrypoint, `/dev/uinput` creation, thread startup.
   - `hw-bridge/src/state.rs`: `BoardProfile` auto-detection and shared `BridgeState`.
   - `hw-bridge/src/devices.rs`: Trait-based peripheral abstraction (`LedRingDevice`, `AuxLightDevice`, `FrontDisplayDevice`, `AudioSubsystemDevice`, `BoardPeripherals`), including `Sn3236I2cRing`, `SysfsFbLedRing`, `OrionAmbilightDevice` (`12×2` RGBW `/dev/fb0`), `OrionMatrix21x12Display` (`21×12` monochrome LED screen `/dev/fb1`), and `OrionQuadAcm8625Audio` (`4× ACM8625S` + `96 kHz / 38.4 kHz` Ultrasound TDM).
   - `hw-bridge/src/leds.rs`: `.led` animation parser/player (`ring` & `ambilight`) and volume arc generator.
   - `hw-bridge/src/tts.rs`: Pure procedural Russian Formant TTS synthesizer (Rosenberg glottal source + 4-formant Klatt cascade/parallel resonator bank, Russian orthoepy, proclitic merging, and 3-point `IK-1/2/3` pitch contours).
-  - `hw-bridge/src/audio.rs`: ALSA `snd-aloop` (`hw:0,1`) capture, chunked TTS playback with `STOP_TTS` interruption, WAV ring buffer, 440 Hz test tone, `libasound_module_ctl_Saved.so` stub generator.
+  - `hw-bridge/src/audio.rs`: ALSA `snd-aloop` (`hw:0,1`) capture, live `PcmAudioChunk` broadcast to connected duplex clients, chunked TTS playback with `STOP_TTS` interruption, 440 Hz test tone, `libasound_module_ctl_Saved.so` stub generator.
   - `hw-bridge/src/input.rs`: Linux `uinput` device creation and `EV_KEY` / `EV_ABS` event injection.
   - `hw-bridge/src/ipc.rs`: TCP servers for Quasar IPC (`:9875` `aliced`, `:9850` `yio_audio`, `:9903` `iohub_services`) and voice injection dialog state machine.
   - `hw-bridge/src/proto.rs`: Zero-dependency Protobuf wire encoder/decoder for `QuasarMessage` (`[u32_le_len][payload]`).
-  - `hw-bridge/src/http.rs`: HTTP REST server (`:8091` in guest -> `:18091` on host) and `/sys` sensor writers.
-  - `hw-bridge/src/dashboard.html`: Single-page web UI (`Virtual Speaker Twin`) with live WebAudio speaker streaming (`[LIVE SPEAKER: ON]`), HTML5 WAV buffer player, 36-LED ring + 12×2 RGBW ambilight SVG, 7-segment clock / 21×12 monochrome matrix SVG, and 4× `ACM8625S` + Ultrasound TDM telemetry.
+  - `hw-bridge/src/bridge_server.rs`: Duplex TCP server (`:8091` in guest -> `:18091` on host) pushing `GuestPacket::StateSnapshot` and `GuestPacket::PcmAudioChunk` frames and handling `HostCommand` requests.
+- `kuyase/`: Host desktop GUI application (`eframe`/`egui` + `egui_tiles`) and CLI runner crate.
+  - `kuyase/src/main.rs`: CLI entrypoint (`kuyase`, `kuyase run --headless`, `kuyase test`, `kuyase dump <ip>`, `kuyase prepare`).
+  - `kuyase/src/session.rs`: `EmulatorSession` managing `qemu-system-aarch64` child process lifecycle, piped `ttyAMA0` serial `stdin`/`stdout`/`stderr`, secondary `virtio-blk` bridge injection, and `-snapshot` overlay mode.
+  - `kuyase/src/bridge_client.rs`: Persistent duplex TCP client (`BridgeClient`) receiving `StateSnapshot` and `PcmAudioChunk` packets and sending `HostCommand` requests.
+  - `kuyase/src/adb.rs`: Pure-Rust ADB TCP protocol client (`CNXN`, `OPEN`, `WRTE`, `CLSE`, `shell:`, and `sync:` `RECV`/`DATA`).
+  - `kuyase/src/dumper.rs`: Network ADB firmware dumper (`kuyase dump <ip[:5555]>`) with automatic partition space probing and secret scrubbing.
+  - `kuyase/src/image_builder.rs` & `kuyase/src/ext_fs.rs`: Userspace `Guest Image` (`work/<board>-system.ext4`) builder supporting `rootfs.tar.gz`, `.tar`, `.zip`, `system.img[.gz]`, and `ubi`/`mtd` dumps without WSL2 or `sudo mount -o loop`.
+  - `kuyase/src/test_suite.rs`: Native multi-board hardware and Quasar IPC verification suite (`kuyase test`).
+  - `kuyase/src/gui/`: `egui_tiles` workspace (`Full Workbench` and `Compact Remote` presets persisted to `work/kuyase-ui.json`), 60 FPS `Virtual Speaker Twin` vector canvas (`canvas.rs`), interactive `ttyAMA0` terminal (`terminal.rs`), host audio playback & `.wav` recorder (`host_audio.rs`), amplifier/voice/IPC docks (`docks.rs`), and board/image/dump manager (`launcher.rs`).
 - `guest-init/equasar-qemu-init.sh`: Guest `PID 1` (`/quasar-qemu-init.sh`) that mounts virtual filesystems, spoofs `/proc/device-tree`, synthesizes `/sys/class/leds/*`, `/sys/class/graphics/fb0..2`, `/sys/bus/i2c/devices/*`, `/sys/class/power_supply/ya_pd`, and ALSA devices (`pcm.speakers`, `pcm.ultrasound`, `pcm.bluetooth`), starts `/usr/bin/adbd` (`:5555`), and launches `/usr/local/bin/qemu-hw-bridge`.
 - `kernel/build-kernel.sh`: Builds Linux `6.6.60` `arm64` (`kernel/Image`) with `CONFIG_COMPAT=y`, `snd-aloop`, `uinput`, patched `drivers/i2c/i2c-stub.c`, and 3-framebuffer `drivers/video/fbdev/vfb.c` (`fb0`, `fb1`, `fb2`).
-- `scripts/prepare-rootfs.sh`: Unpacks a Firmware Dump (`rootfs.tar.gz`, `ubi0_0_rootfs.img`, `mtd3_system.bin`, `system.img[.gz]`) into `work/<board>-system-orig.ext4` and injects `quasar-qemu-init.sh`, `adbd`, and `qemu-hw-bridge` into `work/<board>-system.ext4`.
-- `scripts/run-qemu.sh` / `scripts/run-qemu.ps1`: Launches `qemu-system-aarch64` with port forwarding (`:18091 -> :8091`, `:18090 -> :8090`, `:15555 -> :5555`).
-- `scripts/dump-from-adb.sh` / `scripts/dump-from-adb.ps1`: Pulls a clean Firmware Dump from a physical speaker over ADB (`:5555`).
-- `tests/test_qemu_multi_board.py`: End-to-end integration test suite verifying ADB, LEDs, clock, buttons, sensors, voice injection, IPC hijack/vocalize, and ALSA capture across all built images in `work/`.
 
 ## Supported Board Profiles (`board_slug`)
 
@@ -54,12 +60,12 @@ All board-specific hardware peripherals are encapsulated behind 4 `Send + Sync` 
   - `Sn3236I2cRing` (`yandexmini`, bus `/dev/i2c-0`, address `0x3c`):
     - `0x00`: Shutdown register (`bit 0`: `1` = normal operation, `0` = software shutdown).
     - `0x01..0x12`: 18 PWM brightness registers for 6 LEDs in **BGR** order (`LED i`: `B = 0x01 + i*3`, `G = 0x02 + i*3`, `R = 0x03 + i*3`).
-    - `0x25`: PWM & Control Update register. Writing any byte latches shadow values from `0x01..0x12` and `0x26..0x37` to the active LEDs.
+    - `0x25`: PWM & Control Update register (`Register Latch`). Writing any byte latches shadow values from `0x01..0x12` and `0x26..0x37` to the active LEDs.
     - `0x26..0x37`: 18 LED Control registers (`bit 0` = `OUT_EN`, `bits 2:1` = `SL` current divider: `00` = `Imax`, `01` = `Imax/2`, `10` = `Imax/3`, `11` = `Imax/4`).
     - `0x4a`: Reset register. Writing any byte clears all registers (`0x00..0x4b`) and turns off all LEDs.
   - `SysfsFbLedRing` (`orion`, `cucumber`, `yandexmini2`, `yandexmicro`, etc.):
     - Resolves ring framebuffer by `/sys/class/graphics/fb*/name == "ring"` (`/dev/fb2` on `orion`, `/dev/fb0` on others).
-    - Direct writes to `/sys/class/leds/<prefix>:<color>:ring<N>/brightness` (`0..255`) require setting `trigger` to `none` first (`echo none > trigger`). Writing `brightness` while `[ledfb-ring]` is active increments `led_trigger_conflict_count` and is rejected.
+    - Direct writes to `/sys/class/leds/<prefix>:<color>:ring<N>/brightness` (`0..255`) require setting `trigger` to `none` first (`echo none > trigger`). Writing `brightness` while `[ledfb-ring]` is active increments `led_trigger_conflict_count` (`Trigger Conflict`) and is rejected.
 - **`AuxLightDevice`**:
   - `OrionAmbilightDevice` (`orion`): 12 dual-channel RGBW zones via `/dev/fb0` (`name = "ambilight"`, `12×1`, `48 bpp`, 72 bytes) and `/sys/class/leds/orion:{red,green,blue,white}:ambilight{0..11}{a,b}` + `/system/vendor/quasar/ledpatterns/ambilight/*.led`.
   - `LogoSysfsFbDevice` (`cucumber`, `pickle`, `mango`): `logo0..N` in `/sys/class/leds/<prefix>:*:logo*`.
@@ -80,7 +86,7 @@ All board-specific hardware peripherals are encapsulated behind 4 `Send + Sync` 
 - ADC Voltage: `/sys/bus/iio/devices/iio:device0/in_voltage6_mean_raw`.
 
 ### 4. Audio (`ALSA` & Formant TTS)
-- Loopback card `Loopback` (`snd-aloop`): playback to `default` (`hw:0,0,0` + `softvol` control `Master` `0..10000`) is captured by `qemu-hw-bridge` from `hw:0,1,0` (`48000 Hz`, `S16_LE`, stereo, with 400 ms inter-word pause hangover) and exposed at `GET /api/audio/output.wav` (supports `?from=<byte_offset>` for live WebAudio delta streaming).
+- Loopback card `Loopback` (`snd-aloop`): playback to `default` (`hw:0,0,0` + `softvol` control `Master` `0..10000`) is captured by `qemu-hw-bridge` from `hw:0,1,0` (`48000 Hz`, `S16_LE`, stereo, with 400 ms inter-word pause hangover) and pushed live to the host over `GuestPacket::PcmAudioChunk`.
 - Ultrasound TDM (`pcm.ultrasound` on `hw:0,0,2`, `96000 Hz`, stereo/4ch, `softvol` control `Ultrasound Playback Volume`).
 - Expressive Russian Formant TTS (`hw-bridge/src/tts.rs`): procedural synthesis (number expansion, proclitic merging, Russian orthoepy/palatalization, Bryzgunova `IK-1/2/3` 3-point pitch contours, Rosenberg glottal pulse + 4-formant Klatt cascade/parallel resonator bank) streamed to ALSA in `40 ms` chunks with immediate `STOP_TTS` / `CANCEL_DIALOG` interruption.
 
@@ -93,20 +99,24 @@ All sockets use little-endian length-prefixed framing `[u32_le_len][QuasarMessag
 - `127.0.0.1:9903` (`iohub_services`): Broadcasts `io_event` key/button notifications.
 - `/tmp/daemons_logs/maind.log` (symlinked to `/data/quasar/daemons_logs/maind.log` and `/bkupgrade/data/quasar/daemons_logs/maind.log`): Receives `[sdk] onRequestStateChanged: LISTENING, recognizedPhrase='...'` lines upon voice injection.
 
-## Host Ports & Control Endpoints
+## Host Ports & Duplex Bridge Protocol (`protocol/src/lib.rs`)
 
-- `127.0.0.1:15555` -> Guest `:5555` (ADB root shell: `adb connect 127.0.0.1:15555`).
+- `127.0.0.1:15555` -> Guest `:5555` (ADB root shell: `adb connect 127.0.0.1:15555` or internal `kuyase::adb::AdbClient`).
 - `127.0.0.1:18090` -> Guest `:8090` (Forwarded port for custom guest services/SDKs).
-- `127.0.0.1:18091` -> Guest `:8091` (`Virtual Speaker Twin` UI & REST API):
-  - `GET /api/state` — Full JSON state (`ring_pixels`, `logo_pixels`, `aux_light_kind`, `display_kind`, `screen_width`, `screen_height`, `screen_pixels`, `clock_segments`, `amplifiers`, `ultrasound`, `alice_state`, `aliced_hijack_count`, `aliced_say_count`, `ipc_error_count`, `led_trigger_conflict_count`, sensor values, logs).
-  - `GET /api/audio/output.wav[?from=<byte_offset>]` — Captured ALSA playback audio (`WAV`, 48 kHz stereo; optional `from` byte offset returns only new PCM frames for live WebAudio streaming).
-  - `POST /api/hw/button` — `{"button": "action"|"mute"|"volume_up"|"volume_down", "action": "single"|"double"|"triple"|"long"}`
-  - `POST /api/hw/volume` — `{"volume_level": 0..10}`
-  - `POST /api/hw/led` — `{"pattern": "alice_listening.led"|""}`
-  - `POST /api/hw/clock` — `{"text": "19:30°"|"pattern:joy", "brightness": 255}` (writes to 7-segment `sysfs` clock or `orion` `21×12` LED matrix `/dev/fb1`).
-  - `POST /api/hw/sensor` — `{"temp_c": 42.5, "als_lux": 320, "tof_mm": 165, "doa_angle": 90, "swipe": true}`
-  - `POST /api/voice/inject` — `{"phrase": "...", "doa_angle": 90, "wake_only": false}`
-  - `POST /api/ipc/test` — `{"cmd": "cancel_dialog"|"stop_tts"|"vocalize", "text": "..."}`
-  - `POST /api/audio/test_tone` — `{}`
-  - `POST /api/audio/clear` — `{}`
-  - `POST /api/hw/poweroff` — `{}`
+- `127.0.0.1:18091` -> Guest `:8091` (Duplex TCP stream with 5-byte header `[u8 kind][u32_le payload_len][payload]`):
+  - **Guest -> Host (`GuestPacket`)**:
+    - `kind = 1` (`StateSnapshot`): JSON-encoded `BridgeStateSnapshot`.
+    - `kind = 2` (`PcmAudioChunk`): Raw `48000 Hz`, `S16_LE`, 2-channel PCM audio bytes.
+    - `kind = 3` (`CommandAck`): JSON-encoded `CommandAckPayload { ok, error, message }`.
+  - **Host -> Guest (`HostCommand`, `kind = 1`)**:
+    - `RequestState`
+    - `PressButton { button: "action"|"mute"|"volume_up"|"volume_down", action: "single"|"double"|"triple"|"long" }`
+    - `SetVolume { volume_level: 0..10 }`
+    - `SetLedPattern { pattern: "alice_listening.led"|"" }`
+    - `SetClockDisplay { segments, replace, pixels, led_frame, brightness, scale_brightness, text }`
+    - `SetSensor { doa_angle, mic_rms, als_lux, temp_c, tof_mm, swipe }`
+    - `InjectVoice { phrase, doa_angle, rms, wake_only }`
+    - `IpcTest { cmd: "cancel_dialog"|"stop_tts"|"vocalize", text }`
+    - `PlayTestTone`
+    - `ClearAudio`
+    - `PowerOff`

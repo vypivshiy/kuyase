@@ -1,11 +1,11 @@
 # Снятие дампа прошивки для `KUYASE`
 
-Инструкция по снятию системного дампа с колонки Яндекса по сетевому ADB (`<IP>:5555`).
+Инструкция по снятию системного дампа (`Firmware Dump`) с колонки Яндекса по сетевому ADB (`<IP>:5555`) и сборке загрузочного образа в userspace.
 
 >[!warning]
 > **Особенности сетевого ADB на колонках Яндекса**
-> * Выполняйте команды строго последовательно — параллельные обращения к `<IP>:5555` вызывают `protocol fault` на старом демоне `adbd`.
-> * Скачивайте бинарные архивы только через `adb pull` — перенаправление `adb shell "tar ..." > file.tar.gz` повреждает архив из-за замены `\n` (`0x0A`) на `\r\n` (`0x0D 0x0A`) в `stdout`.
+> * Выполняйте обращения к `<IP>:5555` строго последовательно — параллельные TCP-сессии вызывают `protocol fault` на старом демоне `adbd`. Встроенный клиент `kuyase dump` соблюдает это ограничение автоматически.
+> * При ручном снятии скачивайте бинарные архивы только через `adb pull` (протокол `sync:`) — перенаправление `adb shell "tar ..." > file.tar.gz` повреждает архив из-за замены `\n` (`0x0A`) на `\r\n` (`0x0D 0x0A`) в потоке `shell:`.
 
 ---
 
@@ -13,14 +13,15 @@
 
 | Файл | Содержимое |
 | :--- | :--- |
-| `rootfs.tar.gz` | Архив системных каталогов корня (`bin sbin lib lib32 lib64 usr etc system boot linuxrc`) без временных сетевых конфигов и хешей паролей |
+| `rootfs.tar.gz` | Архив системных каталогов корня (`bin sbin lib lib32 lib64 usr etc system boot linuxrc`) без пользовательских разделов, сетевых конфигов и хешей паролей |
+| `dump-info.json` | Метаданные снятого дампа (`board_slug`, `device_type_cfg`, `dt_model`, таблица разделов `df -k`) |
 
 >[!note]
 > Разделы `/data`, `/bkupgrade`, `/nv`, `/env`, `/ota` и `/tee` (токены аккаунта Яндекса, пароли Wi-Fi, серийные номера и ключи устройства) в дамп **не входят**.
 
 ### Требования к свободной памяти на устройстве и ПК
 
-Так как `adb pull` скачивает обычный файл с файловой системы колонки, перед передачей по сети архив временно собирается на самом устройстве (в ОЗУ `/tmp` либо во флеш-памяти `/bkupgrade` / `/data`), а после скачивания автоматически удаляется:
+Перед передачей по ADB `sync:` архив временно собирается на самом устройстве (в ОЗУ `/tmp` либо во флеш-памяти `/bkupgrade` / `/data`), а сразу после скачивания автоматически удаляется:
 
 | Архитектура и модели | Формат дампа | Требуется на колонке (временно) | Размер на ПК (дампа / образа `.ext4`) |
 | :--- | :--- | :--- | :--- |
@@ -28,29 +29,33 @@
 | **64-bit `aarch64` (eMMC / NAND)**<br>`cucumber` (Миди), `orion` (Станция 3), `pickle` (Мини 3 Про) | `rootfs.tar.gz`<br>`system.img.gz`<br>`system.img` | **150 – 300 МиБ** (в `/data`, `/bkupgrade` или `/tmp`)<br>**150 – 300 МиБ** (в `/data`)<br>**512 – 1024 МиБ** (в `/data`) | ~150–300 МиБ / **1024 МиБ**<br>~150–300 МиБ / **1024 МиБ**<br>~1024 МиБ / **1024 МиБ** |
 
 >[!tip]
-> На колонках с `>= 256 МиБ` ОЗУ (например, `yandexmini`, где в `tmpfs /tmp` свободно ~117 МиБ) скрипт создаёт временный архив прямо в ОЗУ (`/tmp`), не расходуя ресурс перезаписи NAND-флеш. На 64-битных колонках с крупным системным разделом (`150–300 МиБ` в сжатом виде) скрипт автоматически выбирает раздел `/data` или `/bkupgrade`, если архив не помещается в `/tmp`.
+> На колонках с `>= 256 МиБ` ОЗУ (например, `yandexmini`, где в `tmpfs /tmp` свободно ~117 МиБ) `kuyase dump` создаёт временный архив прямо в ОЗУ (`/tmp`), не расходуя ресурс перезаписи NAND-флеш. На 64-битных колонках с крупным системным разделом (`150–300 МиБ` в сжатом виде) автоматически выбирается раздел `/bkupgrade` или `/data`, если архив не помещается в `/tmp`.
 
 ---
 
-## Вариант А — Скриптом из репозитория
+## Вариант А — Встроенным клиентом `kuyase` (CLI или GUI, без `platform-tools`)
 
-Укажите IP-адрес колонки с открытым портом `5555`:
+Приложение `kuyase` содержит собственную реализацию протокола ADB TCP (`CNXN`, `OPEN`, `WRTE`, `CLSE` и `sync:` `RECV`/`DATA`) на Rust (`kuyase/src/adb.rs`, `kuyase/src/dumper.rs`), поэтому установка внешней утилиты `adb` не требуется.
+
+### Из командной строки (Windows / Linux):
 
 ```bash
-# Linux / WSL2 / macOS:
-./scripts/dump-from-adb.sh 10.1.1.56
+# Снять дамп в backups/dump-<board>-<timestamp>/:
+cargo run --release -p kuyase -- dump 10.1.1.56
+
+# С указанием нестандартного порта или целевой папки:
+cargo run --release -p kuyase -- dump 10.1.1.56:5555 --out ./backups/my-speaker-dump
 ```
 
-```powershell
-# Windows PowerShell:
-.\scripts\dump-from-adb.ps1 10.1.1.56
-```
+### Из графического интерфейса (`kuyase`):
 
-Скрипт автоматически определит модель колонки, выберет раздел со свободным местом для временного архива (`/bkupgrade`, `/data` или `/tmp`), скачает файлы в `backups/dump-<модель>-<дата>/` и очистит временные файлы на устройстве.
+1. Откройте панель **Board & Image Manager** -> секцию **3. Network ADB Firmware Dumper (:5555)**.
+2. Введите адрес колонки (например, `10.1.1.56:5555`) и нажмите **Pull Clean rootfs.tar.gz via ADB**.
+3. После завершения скачивания нажмите **Build All from backups/** (или выполните `cargo run --release -p kuyase -- prepare`) для сборки `work/<board>-system.ext4`.
 
 ---
 
-## Вариант Б — Вручную через `adb` (без клонирования репозитория)
+## Вариант Б — Вручную через внешнюю утилиту `adb`
 
 ### 1. Подключение
 
@@ -87,8 +92,6 @@ adb -s $S shell "rm -f /bkupgrade/rootfs.tar.gz /data/rootfs.tar.gz /tmp/rootfs.
 
 ### 3. Альтернатива: снятие сырого образа UBIFS (`ubi0_0_rootfs.img`) или раздела NAND (`mtd3_system.bin`)
 
-Для колонок с NAND-памятью (например, `yandexmini`, `yandexmini2`, `yandexmicro`) вместо `rootfs.tar.gz` можно снять образ тома UBIFS `/dev/ubi0_0` или раздела `/dev/mtd3`:
-
 ```bash
 # Вариант с томом UBIFS (/dev/ubi0_0):
 adb -s $S shell "dd if=/dev/ubi0_0 of=/tmp/ubi0_0_rootfs.img bs=126976"
@@ -103,29 +106,19 @@ adb -s $S shell "rm -f /tmp/mtd3_system.bin"
 
 ---
 
-## Детекция и очистка чувствительных данных (`sanitize-rootfs`)
+## Автоматическая очистка чувствительных данных и userspace-сборка `.ext4`
 
-Чтобы не перегружать первичный дамп на самом устройстве, фильтрация сетевых настроек (`wpa_supplicant.conf`, DHCP-лизов, локальных IP в `/etc/hosts`), ключей `/tee` и сторонних модификаций (`dropbear`, `S99alinad`, `S100privacy`) вынесена в отдельный скрипт на ПК (`scripts/sanitize-rootfs.sh` / `scripts/sanitize-rootfs.ps1`). Сборщик `scripts/prepare-rootfs.sh` вызывает его автоматически, но вы также можете запускать его отдельно для аудита (`--check`) или очистки (`--clean`) папок дампа и готовых `.ext4` образов:
+И встроенный дампер `kuyase dump`, и сборщик образов `kuyase prepare` (`kuyase/src/image_builder.rs`) автоматически пропускают дерево файлов через фильтр очистки (`sanitize_tree`) в оперативной памяти:
+* Очищается содержимое каталогов `/data/*`, `/bkupgrade/*`, `/tee/*`, `/nv/*`, `/env/*`, `/ota/*`, `/tmp/*`, `/run/*`, `/var/run/*`, `/var/db/dhcpcd/*`, `/var/lib/chrony/*`.
+* Удаляются учётные данные Wi-Fi и ключи (`/etc/wpa_supplicant.conf`, `/etc/hostapd_temp.conf`, `/etc/wifi/ap_name`, `/etc/shadow`, `/root/.ssh`, `/root/.ash_history`, базы `*.db` и `*.sqlite*` в `/etc`, `/var`, `/root`).
+* Удаляются сторонние SSH-серверы и модификации (`/etc/dropbear`, `/usr/local/bin/dropbear`, `/usr/local/bin/equasar-daemon`, `/etc/init.d/S99zdropbear`, `/etc/init.d/S99alinad`, `/etc/init.d/S100privacy`).
+
+После очистки сборщик нормализует окончания строк `CRLF -> LF` в `/quasar-qemu-init.sh`, инжектирует `/quasar-qemu-init.sh` (`0755`) и `/usr/local/bin/qemu-hw-bridge` (`0755`) и формирует чистый образ `work/<board>-system.ext4` напрямую в userspace (без `sudo mount -o loop` и без WSL2):
 
 ```bash
-# Linux / WSL2 — аудит всех образов в work/*.ext4 или конкретной папки дампа:
-sudo ./scripts/sanitize-rootfs.sh --check
-sudo ./scripts/sanitize-rootfs.sh --check backups/dump-yandexmini
-
-# Очистка папки дампа или пересборка образов .ext4 с обнулением свободных блоков:
-sudo ./scripts/sanitize-rootfs.sh --clean backups/dump-yandexmini
-sudo ./scripts/sanitize-rootfs.sh --clean
+cargo run --release -p kuyase -- prepare --dump ./speaker-dump/rootfs.tar.gz
 ```
-
-```powershell
-# Windows PowerShell:
-.\scripts\sanitize-rootfs.ps1 -Check
-.\scripts\sanitize-rootfs.ps1 -Check backups\dump-yandexmini
-.\scripts\sanitize-rootfs.ps1 -Clean backups\dump-yandexmini
-```
-
----
 
 >[!note]
-> **Поддерживаемые форматы дампов и запуск**
-> Помимо папки с `rootfs.tar.gz`, сборщик `scripts/prepare-rootfs.sh` напрямую принимает образы NAND UBIFS (`ubi0_0_rootfs.img`, `mtd3_system.bin`) и eMMC (`system.img`, `system.img.gz`). Инструкция по сборке и запуску эмулятора приведена в [`README.md`](./README.md).
+> **Поддерживаемые входные форматы `kuyase prepare`**
+> Сборщик напрямую принимает архивы `rootfs.tar.gz` / `*.tgz` / `*.tar` / `*.zip`, распакованные директории, а также образы разделов `system.img[.gz]`, `ubi0_0_rootfs.img` и `mtd3_system.bin`. Инструкция по запуску и тестированию эмулятора приведена в [`README.md`](./README.md).
