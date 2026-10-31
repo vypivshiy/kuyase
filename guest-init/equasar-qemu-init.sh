@@ -75,6 +75,50 @@ hostname "qemu-${BOARD}" 2>/dev/null || true
 # 2. Ensure loopback is up (eth0 is configured via kernel `ip=dhcp`)
 ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null || true
 
+# 2b. Optional LAN NIC. When the host passes a second virtio NIC (52:4b:59:xx,
+# a tap on a dedicated bridge) the speaker lives directly on the physical LAN,
+# so AirPlay/mDNS is reachable from a real iPhone. eth0 stays management.
+# The AirPlay plugin advertises mDNS on wlan0 only, so the NIC carries that name.
+lan_dhcp_up() {
+  tries=0
+  while [ $tries -lt 6 ]; do
+    got=0
+    # /sys/class/net is masked by the fake identity tree, so enumerate links
+    # through netlink instead.
+    for n in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1); do
+      case "$n" in
+        lo|eth0|sit0|docker*|veth*|br-*|tap*) continue ;;
+      esac
+      case "$(ip -o link show "$n" 2>/dev/null | sed -n 's/.*link\/ether \([0-9a-f:]*\).*/\1/p')" in
+        52:4b:59:*)
+          if [ "$n" != "wlan0" ]; then
+            ip link set "$n" down 2>/dev/null || true
+            ip link set "$n" name wlan0 2>/dev/null || true
+          fi
+          ;;
+        *) continue ;;
+      esac
+      n=wlan0
+      ip link set "$n" up 2>/dev/null || ifconfig "$n" up 2>/dev/null || true
+      ip -4 addr show "$n" 2>/dev/null | grep -q 'inet ' && { got=1; continue; }
+      udhcpc -i "$n" -n -q -t 6 -T 3 -s /usr/share/udhcpc/default.script \
+        >"/tmp/udhcpc-$n.log" 2>&1 || true
+      if ip -4 addr show "$n" 2>/dev/null | grep -q 'inet '; then
+        got=1
+        # renew the lease in the background
+        ( while :; do sleep 1800; \
+            udhcpc -i "$n" -n -q -t 3 -T 3 -s /usr/share/udhcpc/default.script \
+              >/dev/null 2>&1; done ) &
+      fi
+    done
+    [ "$got" = 1 ] && return 0
+    tries=$((tries + 1))
+    sleep 5
+  done
+  return 0
+}
+lan_dhcp_up &
+
 # 3. Ensure passwordless root login for ADB shell
 cat > /etc/passwd << 'EOF'
 root::0:0:root:/root:/bin/sh
