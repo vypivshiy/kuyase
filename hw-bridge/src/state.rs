@@ -280,6 +280,7 @@ pub struct BridgeState {
     pub logo_leds: usize,
     pub ambilight_leds: usize,
     pub has_clock: bool,
+    pub full_mode: bool,
     pub doa_angle: AtomicU32,
     pub mic_rms: AtomicU32,
     pub mics_muted: AtomicBool,
@@ -321,6 +322,9 @@ impl BridgeState {
         let peripherals = BoardPeripherals::from_profile(&profile);
         let ring_leds = profile.ring_leds;
         let aux_zones = peripherals.aux_light.zone_count();
+        let full_mode = fs::read_to_string("/proc/cmdline")
+            .map(|c| c.split_whitespace().any(|t| t == "quasar.mode=full"))
+            .unwrap_or(false);
         Self {
             board_slug: profile.board_slug,
             board_name: profile.board_name,
@@ -328,6 +332,7 @@ impl BridgeState {
             logo_leds: profile.logo_leds,
             ambilight_leds: profile.ambilight_leds,
             has_clock: profile.has_clock,
+            full_mode,
             doa_angle: AtomicU32::new(0),
             mic_rms: AtomicU32::new(60),
             mics_muted: AtomicBool::new(false),

@@ -74,8 +74,6 @@ pub struct BridgeStateSnapshot {
     pub maind_logs: Vec<String>,
 }
 
-pub type BridgeState = BridgeStateSnapshot;
-
 impl Default for BridgeStateSnapshot {
     fn default() -> Self {
         Self {

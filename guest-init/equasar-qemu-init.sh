@@ -491,7 +491,14 @@ fi
 
 echo "=== [Quasar QEMU Emulator] Booting board=$BOARD maind_mode=$MODE ==="
 
-# 9. Start Virtual Speaker Twin & Hardware Bridge (:8091)
+# 9. Start native Quasar maind stack first when maind_mode=full (otherwise qemu-hw-bridge runs the autonomous IPC/TTS stub)
+if [ "$MODE" = "full" ] && [ -x /system/vendor/quasar/onboot.sh ]; then
+  echo "=== Starting native Quasar maind stack (/system/vendor/quasar/onboot.sh start) ==="
+  /system/vendor/quasar/onboot.sh start >/tmp/quasar-onboot.log 2>&1 &
+  sleep 0.4
+fi
+
+# 10. Start Virtual Speaker Twin & Hardware Bridge (:8091)
 # If host passed an updated qemu-hw-bridge binary via second virtio drive (/dev/vdb), hot-update it before launch
 if [ -b /dev/vdb ] && [ "$(dd if=/dev/vdb bs=4 count=1 2>/dev/null)" = "$(printf '\177ELF')" ]; then
   cat /dev/vdb > /usr/local/bin/qemu-hw-bridge 2>/dev/null || true
@@ -499,12 +506,6 @@ if [ -b /dev/vdb ] && [ "$(dd if=/dev/vdb bs=4 count=1 2>/dev/null)" = "$(printf
 fi
 /usr/local/bin/qemu-hw-bridge >/tmp/hw-bridge.log 2>&1 &
 sleep 0.4
-
-# 10. Start native Quasar maind stack only when maind_mode=full (otherwise qemu-hw-bridge runs the lightweight IPC/log stub)
-if [ "$MODE" = "full" ] && [ -x /system/vendor/quasar/onboot.sh ]; then
-  echo "=== Starting native Quasar maind stack (/system/vendor/quasar/onboot.sh start) ==="
-  /system/vendor/quasar/onboot.sh start >/tmp/quasar-onboot.log 2>&1 &
-fi
 
 # 11. Run any user-installed /etc/init.d/S99* startup scripts (skipping firmware S99onboot.sh / S99zdropbear)
 for s in /etc/init.d/S99*; do

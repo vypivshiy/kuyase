@@ -206,6 +206,14 @@ pub fn sync_immediate_led_state(state: &BridgeState) {
         return;
     }
 
+    if state.full_mode {
+        *state.native_led_frame.lock().unwrap() = vec![[0u8; 3]; ring_leds];
+        if aux_zones > 0 {
+            *state.native_aux_frame.lock().unwrap() = vec![[0u8; 3]; aux_zones];
+        }
+        return;
+    }
+
     if state.mics_muted.load(Ordering::Relaxed) {
         let mute_frames = load_led_pattern("mute_mics", ring_leds);
         let (ref px, _) = mute_frames[0];
@@ -299,6 +307,19 @@ pub fn spawn_native_led_animator(state: Arc<BridgeState>) {
                 apply_native_frames(&state, px.clone(), aux);
                 frame_idx = frame_idx.wrapping_add(1);
                 thread::sleep(Duration::from_millis(dur_ms as u64));
+                continue;
+            }
+
+            if state.full_mode {
+                if was_active {
+                    was_active = false;
+                    frame_idx = 0;
+                    *state.native_led_frame.lock().unwrap() = vec![[0u8; 3]; ring_leds];
+                    if aux_zones > 0 {
+                        *state.native_aux_frame.lock().unwrap() = vec![[0u8; 3]; aux_zones];
+                    }
+                }
+                thread::sleep(Duration::from_millis(80));
                 continue;
             }
 
