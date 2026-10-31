@@ -11,7 +11,9 @@ backups/*
 # Built binaries (compiled from source via cargo & build-kernel.sh)
 Releases/
 kuyase-bins.tar.gz
+kuyase-kernel-arm64.img
 kernel/Image
+kernel/kuyase-kernel-arm64.img
 guest-init/bin/qemu-hw-bridge
 
 # Rust build artifacts

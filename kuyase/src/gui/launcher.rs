@@ -345,7 +345,10 @@ pub fn render_launcher_pane(ui: &mut egui::Ui, app: &mut GuiAppState) {
                     };
                     (true, format!("{}{}", p.display(), suffix))
                 }
-                None => (false, "Не найдено (выберите файл Image)".to_string()),
+                None => (
+                    false,
+                    "Не найдено (выберите kuyase-kernel-arm64.img)".to_string(),
+                ),
             };
 
             egui::Grid::new("vm_paths_settings_grid")

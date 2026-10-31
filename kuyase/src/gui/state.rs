@@ -743,8 +743,8 @@ impl GuiAppState {
         thread::spawn(move || {
             if let Some(p) = run_os_custom_file_dialog(
                 &start_dir,
-                "Выберите образ гостевого ядра Linux (Image)",
-                "Ядро Linux (Image*)|Image*;*vmlinuz*|Все файлы (*.*)|*.*",
+                "Выберите образ гостевого ядра Linux (kuyase-kernel-arm64.img / Image)",
+                "Ядро Linux (kuyase-kernel-arm64.img; Image*)|*.img;Image*;*vmlinuz*|Все файлы (*.*)|*.*",
             ) {
                 *slot.lock().unwrap() = Some(p);
             }

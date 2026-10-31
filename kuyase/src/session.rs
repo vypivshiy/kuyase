@@ -22,8 +22,11 @@ pub fn resolve_repo_root() -> PathBuf {
         }
     }
     if let Ok(exe) = env::current_exe() {
+        let has_local_kernel = |dir: &Path| {
+            dir.join("kuyase-kernel-arm64.img").is_file() || dir.join("Image").is_file()
+        };
         if let Some(exe_dir) = exe.parent() {
-            if exe_dir.join("Image").is_file() && !exe_dir.join("..").join("Cargo.toml").is_file() {
+            if has_local_kernel(exe_dir) && !exe_dir.join("..").join("Cargo.toml").is_file() {
                 return exe_dir.to_path_buf();
             }
         }
@@ -36,7 +39,7 @@ pub fn resolve_repo_root() -> PathBuf {
             }
         }
         if let Some(exe_dir) = exe.parent() {
-            if exe_dir.join("Image").is_file() {
+            if has_local_kernel(exe_dir) {
                 return exe_dir.to_path_buf();
             }
         }
@@ -95,6 +98,10 @@ pub fn resolve_qemu_binary(root: &Path) -> Result<PathBuf, String> {
 
 pub fn resolve_kernel_image(root: &Path) -> Result<PathBuf, String> {
     let candidates = [
+        root.join("kuyase-kernel-arm64.img"),
+        root.join("kernel").join("kuyase-kernel-arm64.img"),
+        root.join("Releases").join("kuyase-kernel-arm64.img"),
+        root.join("bin").join("kuyase-kernel-arm64.img"),
         root.join("Image"),
         root.join("kernel").join("Image"),
         root.join("Releases").join("Image"),
@@ -106,7 +113,7 @@ pub fn resolve_kernel_image(root: &Path) -> Result<PathBuf, String> {
         }
     }
     Err(format!(
-        "Guest Linux kernel Image not found in {}/Image, {}/kernel/Image, {}/Releases/Image, or {}/bin/Image",
+        "Guest Linux kernel not found in {}/kuyase-kernel-arm64.img, {}/kernel/kuyase-kernel-arm64.img, {}/Releases/kuyase-kernel-arm64.img, or {}/kernel/Image",
         root.display(),
         root.display(),
         root.display(),

@@ -15,7 +15,7 @@
 
 ## Быстрый старт (готовая портативная сборка)
 
-Для запуска готовой сборки из [**GitHub Releases**](https://github.com/vypivshiy/kuyase/releases) (`kuyase-win64-portable.zip` для Windows x64 или `kuyase-linux64-portable.tar.gz` для Linux x64) не требуется устанавливать Rust, WSL2 или `adb` — ядро `Image`, гостевой инициализатор и демон `qemu-hw-bridge` уже включены в архив.
+Для запуска готовой сборки из [**GitHub Releases**](https://github.com/vypivshiy/kuyase/releases) (`kuyase-win64-portable.zip` для Windows x64 или `kuyase-linux64-portable.tar.gz` для Linux x64) не требуется устанавливать Rust, WSL2 или `adb` — пропатченное гостевое ядро `kuyase-kernel-arm64.img`, гостевой инициализатор и демон `qemu-hw-bridge` уже включены в архив.
 
 ### 1. Установка QEMU
 
@@ -50,7 +50,7 @@
   rustup target add armv7-unknown-linux-musleabihf
   ```
 * **QEMU** (`qemu-system-aarch64` в `./bin/`, `./Releases/` или системном `PATH`).
-* **Гостевое ядро Linux** (`./kernel/Image` или `./Releases/Image`).
+* **Гостевое ядро Linux** (`./kuyase-kernel-arm64.img`, `./kernel/kuyase-kernel-arm64.img` или `./Releases/kuyase-kernel-arm64.img` — можно скачать из [**GitHub Releases**](https://github.com/vypivshiy/kuyase/releases)).
 
 ### 2. Сборка гостевого моста и десктопного приложения
 
