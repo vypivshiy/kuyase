@@ -204,6 +204,17 @@ elif [ -f "${REL_BRIDGE}" ]; then
   BRIDGE_BIN="${REL_BRIDGE}"
 fi
 
+# Optional LAN presence: a pre-created tap device attached to a dedicated
+# bridge (e.g. br-emu on a spare NIC). It is a second virtio NIC; management
+# stays on the user-mode NIC so the host address, gateway and DNS are untouched.
+LAN_ARGS=()
+if [ -n "${KUYASE_LAN_TAP:-}" ] && [ -e "/sys/class/net/${KUYASE_LAN_TAP}" ]; then
+  LAN_ARGS=(-netdev "tap,ifname=${KUYASE_LAN_TAP},script=no,downscript=no,id=lan0"
+            -device "virtio-net-pci,netdev=lan0,mac=${KUYASE_LAN_MAC:-52:54:00:99:00:01}")
+elif [ -n "${KUYASE_LAN_TAP:-}" ]; then
+  echo "[kuyase] LAN tap ${KUYASE_LAN_TAP} not available; user networking only"
+fi
+
 EXTRA_DRIVE_ARGS=()
 if [ -n "${BRIDGE_BIN}" ] && [ -f "${BRIDGE_BIN}" ]; then
   EXTRA_DRIVE_ARGS=(-drive "file=${BRIDGE_BIN},if=virtio,format=raw,readonly=on")
@@ -239,4 +250,5 @@ exec "${QEMU_BIN}" \
   "${EXTRA_DRIVE_ARGS[@]}" \
   -netdev "user,id=net0,${HOST_FWD}" \
   -device virtio-net-pci,netdev=net0 \
+  "${LAN_ARGS[@]}" \
   "${CONSOLE_ARGS[@]}"
