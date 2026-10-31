@@ -826,6 +826,12 @@ fn render_segment_clock_faceplate(
         );
         ui.separator();
         ui.label(
+            RichText::new("ЛКМ: рисовать | ПКМ: стирать")
+                .small()
+                .color(Color32::from_rgb(130, 195, 255)),
+        );
+        ui.separator();
+        ui.label(
             RichText::new(format!("PWM: {}", app.clock_brightness))
                 .small()
                 .monospace()
@@ -855,40 +861,52 @@ fn render_segment_clock_faceplate(
 
     let (crect, cresp) = ui.allocate_exact_size(
         Vec2::new(ui.available_width().max(240.0), 64.0),
-        Sense::click(),
+        Sense::click_and_drag(),
     );
     let cp = ui.painter_at(crect);
     draw_segment_clock(&cp, crect, &active_segs);
 
-    if cresp.clicked() {
-        if let Some(ptr) = cresp.interact_pointer_pos() {
+    let lmb_down = ui.input(|i| i.pointer.primary_down());
+    let rmb_down = ui.input(|i| i.pointer.secondary_down());
+    let lmb_clicked = cresp.clicked();
+    let rmb_clicked = cresp.secondary_clicked();
+    if (lmb_down || rmb_down || lmb_clicked || rmb_clicked)
+        && (cresp.hovered() || cresp.dragged() || lmb_clicked || rmb_clicked)
+    {
+        if let Some(ptr) = ui
+            .input(|i| i.pointer.interact_pos())
+            .or_else(|| cresp.interact_pointer_pos())
+        {
             if let Some(seg_key) = hit_test_clock_segment(crect, ptr) {
+                let draw_mode = (lmb_down || lmb_clicked) && !(rmb_down || rmb_clicked);
                 let is_on = app.clock_active_mask.get(&seg_key).copied().unwrap_or(false)
                     && segment_brightness(&active_segs, &seg_key) > 0;
-                let next_val = if is_on {
-                    app.clock_active_mask.remove(&seg_key);
-                    0
-                } else {
-                    if app.clock_brightness == 0 {
-                        app.clock_brightness = 255;
+                if draw_mode != is_on {
+                    let next_val = if draw_mode {
+                        if app.clock_brightness == 0 {
+                            app.clock_brightness = 255;
+                        }
+                        app.clock_active_mask.insert(seg_key.clone(), true);
+                        app.clock_brightness
+                    } else {
+                        app.clock_active_mask.remove(&seg_key);
+                        0
+                    };
+                    if let Some(ref mut latest) = app.latest_state {
+                        latest.clock_segments.insert(seg_key.clone(), next_val);
                     }
-                    app.clock_active_mask.insert(seg_key.clone(), true);
-                    app.clock_brightness
-                };
-                if let Some(ref mut latest) = app.latest_state {
-                    latest.clock_segments.insert(seg_key.clone(), next_val);
+                    let mut map = BTreeMap::new();
+                    map.insert(seg_key, next_val);
+                    app.send_command(HostCommand::SetClockDisplay {
+                        segments: Some(map),
+                        replace: Some(false),
+                        pixels: None,
+                        led_frame: None,
+                        brightness: Some(app.clock_brightness),
+                        scale_brightness: None,
+                        text: None,
+                    });
                 }
-                let mut map = BTreeMap::new();
-                map.insert(seg_key, next_val);
-                app.send_command(HostCommand::SetClockDisplay {
-                    segments: Some(map),
-                    replace: Some(false),
-                    pixels: None,
-                    led_frame: None,
-                    brightness: Some(app.clock_brightness),
-                    scale_brightness: None,
-                    text: None,
-                });
             }
         }
     }
@@ -1022,11 +1040,26 @@ fn render_matrix_21x12_faceplate(
     st: &BridgeStateSnapshot,
     bridge_online: bool,
 ) {
-    ui.label(
-        RichText::new("Матрица 21x12 LED (/dev/fb1 — ЛКМ: рисовать, ПКМ: стирать)")
-            .small()
-            .color(Color32::from_rgb(165, 175, 190)),
-    );
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            RichText::new("Матрица 21x12 LED (/dev/fb1)")
+                .small()
+                .color(Color32::from_rgb(165, 175, 190)),
+        );
+        ui.separator();
+        ui.label(
+            RichText::new("ЛКМ: рисовать | ПКМ: стирать")
+                .small()
+                .color(Color32::from_rgb(130, 195, 255)),
+        );
+        ui.separator();
+        ui.label(
+            RichText::new(format!("PWM: {}", app.clock_brightness))
+                .small()
+                .monospace()
+                .color(Color32::from_rgb(155, 175, 200)),
+        );
+    });
 
     if app.matrix_custom_pixels.len() < 252 {
         app.matrix_custom_pixels.resize(252, 0);

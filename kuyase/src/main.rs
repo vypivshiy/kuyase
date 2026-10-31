@@ -19,8 +19,8 @@ fn print_usage() {
          \n\
          Usage:\n\
            kuyase\n\
-           kuyase run --headless [--board <slug|all>] [--mode <stub|full>] [--snapshot] [--keep-alive] [--exec <cmd>]\n\
-           kuyase test [--board <slug>] [--snapshot]\n\
+           kuyase run --headless [--board <slug|all>] [--mode <stub|full>] [--snapshot] [--persist-data] [--port-offset <n>] [--listen-all] [--lan-tap <ifname>] [--lan-mac <mac>] [--keep-alive] [--exec <cmd>]\n\
+           kuyase test [--board <slug>] [--snapshot] [--port-offset <n>]\n\
            kuyase dump <ip[:port]> [--out <dir>]\n\
            kuyase prepare [--board <slug>] [--dump <path>]\n\
          \n\
@@ -33,8 +33,13 @@ fn print_usage() {
                --keep-alive          Keep headless VM running in foreground for external test runners\n\
            -c, --exec <cmd>          Execute guest shell command via ADB in headless VM (supports --board all)\n\
                --snapshot            Enable ephemeral Clean Boot overlay (-snapshot)\n\
+               --persist-data        Attach persistent work/<board>-data.ext4 (512 MB) as /data\n\
                --bridge-port <port>  Host TCP port forwarded to guest :8091 (default: 18091)\n\
                --adb-port <port>     Host TCP port forwarded to guest :5555 (default: 15555)\n\
+               --port-offset <n>     Offset added to bridge/adb/sdk ports for parallel instances\n\
+               --listen-all          Bind forwarded ports to 0.0.0.0 instead of 127.0.0.1\n\
+               --lan-tap <ifname>    Attach second virtio NIC (wlan0 in guest) to host TAP interface\n\
+               --lan-mac <mac>       MAC address for LAN TAP NIC (default: 52:4b:59:00:00:01)\n\
            -h, --help                Show this help message"
     );
 }
@@ -51,6 +56,11 @@ struct CliOptions {
     keep_alive: bool,
     exec_cmd: Option<String>,
     snapshot: Option<bool>,
+    persist_data: Option<bool>,
+    bind_all: Option<bool>,
+    lan_tap: Option<String>,
+    lan_mac: Option<String>,
+    port_offset: u16,
     bridge_port: u16,
     adb_port: u16,
 }
@@ -67,6 +77,11 @@ fn parse_args() -> Result<CliOptions, String> {
         keep_alive: false,
         exec_cmd: None,
         snapshot: None,
+        persist_data: None,
+        bind_all: None,
+        lan_tap: None,
+        lan_mac: None,
+        port_offset: 0,
         bridge_port: 18091,
         adb_port: 15555,
     };
@@ -107,6 +122,48 @@ fn parse_args() -> Result<CliOptions, String> {
             "--no-snapshot" | "--persist" => {
                 opts.snapshot = Some(false);
                 i += 1;
+            }
+            "--persist-data" => {
+                opts.persist_data = Some(true);
+                i += 1;
+            }
+            "--no-persist-data" => {
+                opts.persist_data = Some(false);
+                i += 1;
+            }
+            "--listen-all" | "--bind-all" => {
+                opts.bind_all = Some(true);
+                i += 1;
+            }
+            "--bind" => {
+                let Some(val) = args.get(i + 1) else {
+                    return Err("missing value for --bind".to_string());
+                };
+                opts.bind_all = Some(val.trim() == "0.0.0.0");
+                i += 2;
+            }
+            "--lan-tap" => {
+                let Some(val) = args.get(i + 1) else {
+                    return Err("missing value for --lan-tap".to_string());
+                };
+                opts.lan_tap = Some(val.clone());
+                i += 2;
+            }
+            "--lan-mac" => {
+                let Some(val) = args.get(i + 1) else {
+                    return Err("missing value for --lan-mac".to_string());
+                };
+                opts.lan_mac = Some(val.clone());
+                i += 2;
+            }
+            "--port-offset" => {
+                let Some(val) = args.get(i + 1) else {
+                    return Err("missing value for --port-offset".to_string());
+                };
+                opts.port_offset = val
+                    .parse::<u16>()
+                    .map_err(|_| format!("invalid --port-offset: {}", val))?;
+                i += 2;
             }
             "-b" | "--board" => {
                 let Some(val) = args.get(i + 1) else {
@@ -192,13 +249,27 @@ fn run_single_headless_board(
     let mut cfg = SessionConfig::for_board(&root, board_override.or(opts.board.as_deref()))?;
     cfg.mode = opts.mode.clone();
     cfg.snapshot = opts.snapshot.unwrap_or(true);
-    cfg.bridge_port = opts.bridge_port.saturating_add(port_offset.saturating_mul(2));
-    cfg.adb_port = opts.adb_port.saturating_add(port_offset);
-    cfg.sdk_port = if cfg.bridge_port == 18091 {
+    if let Some(pd) = opts.persist_data {
+        cfg.persist_data = pd;
+    }
+    if let Some(ba) = opts.bind_all {
+        cfg.bind_all = ba;
+    }
+    if let Some(ref tap) = opts.lan_tap {
+        cfg.lan_tap = Some(tap.clone());
+    }
+    if let Some(ref mac) = opts.lan_mac {
+        cfg.lan_mac = Some(mac.clone());
+    }
+    cfg.bridge_port = opts.bridge_port;
+    cfg.adb_port = opts.adb_port;
+    cfg.sdk_port = if opts.bridge_port == 18091 {
         Some(18090)
     } else {
         None
     };
+    let total_offset = opts.port_offset.saturating_add(port_offset);
+    cfg.apply_port_offset(total_offset);
 
     if opts.exec_cmd.is_none() {
         println!(
@@ -435,8 +506,8 @@ fn main() {
             run_multi_board_tests(
                 &root,
                 opts.board.as_deref(),
-                opts.bridge_port,
-                opts.adb_port,
+                opts.bridge_port.saturating_add(opts.port_offset),
+                opts.adb_port.saturating_add(opts.port_offset),
                 opts.snapshot.unwrap_or(true),
             )
         }

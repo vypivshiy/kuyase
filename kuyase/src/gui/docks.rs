@@ -204,7 +204,7 @@ fn render_tts_audio_voice_card(ui: &mut egui::Ui, app: &mut GuiAppState) {
                 &tts_sub,
                 false,
                 |ui| {
-                    let text_w = (ui.available_width() * 0.46).clamp(180.0, 340.0);
+                    let text_w = (ui.available_width() * 0.42).clamp(170.0, 320.0);
                     ui.add(
                         egui::TextEdit::singleline(&mut app.ipc_vocalize_text)
                             .desired_width(text_w)
@@ -233,6 +233,24 @@ fn render_tts_audio_voice_card(ui: &mut egui::Ui, app: &mut GuiAppState) {
                             cmd: "stop_tts".to_string(),
                             text: None,
                         });
+                    }
+                    for (label, phrase) in [
+                        (
+                            "Погода",
+                            "Привет! Сегодня в Москве плюс 21 градус, без осадков.",
+                        ),
+                        (
+                            "Панграмма",
+                            "Съешь этих мягких французских булок да выпей чаю",
+                        ),
+                    ] {
+                        if ui
+                            .button(label)
+                            .on_hover_text(phrase)
+                            .clicked()
+                        {
+                            app.ipc_vocalize_text = phrase.to_string();
+                        }
                     }
                 },
             );
@@ -692,7 +710,7 @@ fn render_board_specific_card(ui: &mut egui::Ui, app: &mut GuiAppState) {
                     ui,
                     "I2C Контроллер SN3236 (адрес 0x3c, 18 каналов BGR)",
                     &format!(
-                        "Теневые регистры 0x01..0x12 обновляются по защёлке 0x25 | Статус: {}",
+                        "Запись в 0x01..0x12 меняет только теневой буфер; перенос в активное свечение происходит только при записи в защёлку 0x25 (Register Latch), 0x00=0 включает Stealth Lock | Статус: {}",
                         trig
                     ),
                     true,
@@ -708,6 +726,24 @@ fn render_board_specific_card(ui: &mut egui::Ui, app: &mut GuiAppState) {
                             app.send_command(HostCommand::SetLedPattern {
                                 pattern: String::new(),
                             });
+                        }
+                        if app.session.is_some() {
+                            if ui
+                                .button("Демо защёлки 0x25 (I2C)")
+                                .on_hover_text("Записать BGR в теневые регистры 0x01..0x12, выждать 1 с (кольцо ещё не меняется) и защёлкнуть регистром 0x25")
+                                .clicked()
+                            {
+                                app.send_serial_command(
+                                    "i2cset -y 0 0x3c 0x00 0x01; for r in $(seq 1 3 16); do i2cset -y 0 0x3c $r 0xff; i2cset -y 0 0x3c $((r+1)) 0x40; i2cset -y 0 0x3c $((r+2)) 0x90; done; sleep 1; i2cset -y 0 0x3c 0x25 0x01",
+                                );
+                            }
+                            if ui
+                                .button("Stealth Lock (0x00=0)")
+                                .on_hover_text("Программно погасить и заблокировать чип SN3236 записью 0x00 в регистр 0x00")
+                                .clicked()
+                            {
+                                app.send_serial_command("i2cset -y 0 0x3c 0x00 0x00");
+                            }
                         }
                     },
                 );

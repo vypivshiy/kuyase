@@ -244,6 +244,13 @@ pub fn resolve_board_and_image(
     ))
 }
 
+pub const DEFAULT_LAN_MAC_BASE: &str = "52:4b:59:00:00:01";
+
+pub fn default_lan_mac(port_offset: u16) -> String {
+    let last_octet = ((port_offset as u32) % 254) + 1;
+    format!("52:4b:59:00:00:{:02x}", last_octet)
+}
+
 #[derive(Clone, Debug)]
 pub struct SessionConfig {
     pub root_dir: PathBuf,
@@ -251,6 +258,11 @@ pub struct SessionConfig {
     pub board_cmdline: String,
     pub mode: String,
     pub snapshot: bool,
+    pub persist_data: bool,
+    pub bind_all: bool,
+    pub lan_tap: Option<String>,
+    pub lan_mac: Option<String>,
+    pub port_offset: u16,
     pub bridge_port: u16,
     pub adb_port: u16,
     pub sdk_port: Option<u16>,
@@ -260,17 +272,49 @@ pub struct SessionConfig {
 impl SessionConfig {
     pub fn for_board(root: &Path, board: Option<&str>) -> Result<Self, String> {
         let (slug, drive_img) = resolve_board_and_image(root, board)?;
+        let images_dir = drive_img.parent().unwrap_or(root);
+        let data_img_exists =
+            crate::image_builder::persistent_data_image_path(images_dir, &slug).is_file();
+        let env_persist = env::var("KUYASE_PERSIST_DATA")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let env_bind_all = env::var("KUYASE_BIND_ALL")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let env_lan_tap = env::var("KUYASE_LAN_TAP")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let env_lan_mac = env::var("KUYASE_LAN_MAC")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Self {
             root_dir: root.to_path_buf(),
             board: slug,
             board_cmdline: "auto".to_string(),
             mode: "stub".to_string(),
             snapshot: false,
+            persist_data: data_img_exists || env_persist,
+            bind_all: env_bind_all,
+            lan_tap: env_lan_tap,
+            lan_mac: env_lan_mac,
+            port_offset: 0,
             bridge_port: 18091,
             adb_port: 15555,
             sdk_port: Some(18090),
             drive_img,
         })
+    }
+
+    pub fn apply_port_offset(&mut self, offset: u16) {
+        self.port_offset = offset;
+        if offset > 0 {
+            self.bridge_port = self.bridge_port.saturating_add(offset);
+            self.adb_port = self.adb_port.saturating_add(offset);
+            self.sdk_port = self.sdk_port.map(|p| p.saturating_add(offset));
+        }
     }
 }
 
@@ -392,18 +436,56 @@ impl EmulatorSession {
         let serial_log_path = work_dir.join(format!("{}-serial.log", config.board));
         let _ = File::create(&serial_log_path);
 
+        let bind_ip = if config.bind_all {
+            "0.0.0.0"
+        } else {
+            "127.0.0.1"
+        };
         let mut hostfwd = format!(
-            "user,id=net0,hostfwd=tcp:127.0.0.1:{}-:8091,hostfwd=tcp:127.0.0.1:{}-:5555",
-            config.bridge_port, config.adb_port
+            "user,id=net0,hostfwd=tcp:{}:{}-:8091,hostfwd=tcp:{}:{}-:5555",
+            bind_ip, config.bridge_port, bind_ip, config.adb_port
         );
         if let Some(sdk_p) = config.sdk_port {
-            hostfwd.push_str(&format!(",hostfwd=tcp:127.0.0.1:{}-:8090", sdk_p));
+            hostfwd.push_str(&format!(",hostfwd=tcp:{}:{}-:8090", bind_ip, sdk_p));
         }
 
+        let images_dir = config
+            .drive_img
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(&work_dir);
+
+        let data_img_opt = if config.persist_data {
+            Some(crate::image_builder::ensure_persistent_data_image(
+                images_dir,
+                &config.board,
+                false,
+            )?)
+        } else {
+            None
+        };
+
+        let data_cmdline = if data_img_opt.is_some() {
+            " quasar.data=persist"
+        } else if !config.snapshot {
+            " quasar.data=rootfs"
+        } else {
+            ""
+        };
+
         let append_cmdline = format!(
-            "console=ttyAMA0 root=/dev/vda rw ip=dhcp init=/quasar-qemu-init.sh quasar.board={} quasar.mode={} panic=-1",
-            config.board_cmdline, config.mode
+            "console=ttyAMA0 root=/dev/vda rw ip=dhcp init=/quasar-qemu-init.sh quasar.board={} quasar.mode={}{} androidboot.serialno=EMU0001 panic=-1",
+            config.board_cmdline, config.mode, data_cmdline
         );
+
+        let root_drive_arg = if config.snapshot && data_img_opt.is_some() {
+            format!(
+                "file={},if=virtio,format=raw,snapshot=on",
+                config.drive_img.display()
+            )
+        } else {
+            format!("file={},if=virtio,format=raw", config.drive_img.display())
+        };
 
         let mut cmd = Command::new(&qemu_bin);
         cmd.args([
@@ -421,27 +503,62 @@ impl EmulatorSession {
         .arg("-append")
         .arg(&append_cmdline)
         .arg("-drive")
-        .arg(format!("file={},if=virtio,format=raw", config.drive_img.display()))
+        .arg(&root_drive_arg)
         .arg("-drive")
         .arg(format!(
             "file={},if=virtio,format=raw,readonly=on",
             bridge_bin.display()
         ));
 
-        if config.snapshot {
+        if let Some(ref data_img) = data_img_opt {
+            cmd.arg("-drive")
+                .arg(format!("file={},if=virtio,format=raw", data_img.display()));
+        } else if config.snapshot {
             cmd.arg("-snapshot");
         }
 
         cmd.arg("-netdev")
             .arg(&hostfwd)
-            .args([
-                "-device",
-                "virtio-net-pci,netdev=net0",
-                "-serial",
-                "stdio",
-                "-display",
-                "none",
-            ])
+            .args(["-device", "virtio-net-pci,netdev=net0"]);
+
+        let mut lan_warning: Option<String> = None;
+        if let Some(ref tap_raw) = config.lan_tap {
+            let tap = tap_raw.trim();
+            if !tap.is_empty() {
+                let tap_available = if cfg!(target_os = "linux") {
+                    Path::new(&format!("/sys/class/net/{}", tap)).exists()
+                } else {
+                    true
+                };
+                if tap_available {
+                    let mac = config
+                        .lan_mac
+                        .as_deref()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| default_lan_mac(config.port_offset));
+                    let tap_netdev = if cfg!(windows) {
+                        format!("tap,ifname={},id=lan0", tap)
+                    } else {
+                        format!("tap,ifname={},script=no,downscript=no,id=lan0", tap)
+                    };
+                    cmd.arg("-netdev")
+                        .arg(tap_netdev)
+                        .arg("-device")
+                        .arg(format!("virtio-net-pci,netdev=lan0,mac={}", mac));
+                } else {
+                    let msg = format!(
+                        "[kuyase] LAN tap {} not available; user networking only",
+                        tap
+                    );
+                    println!("{}", msg);
+                    lan_warning = Some(msg);
+                }
+            }
+        }
+
+        cmd.args(["-serial", "stdio", "-display", "none"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -459,6 +576,9 @@ impl EmulatorSession {
         let stderr = child.stderr.take();
 
         let serial_lines = Arc::new(Mutex::new(VecDeque::with_capacity(2048)));
+        if let Some(warn) = lan_warning {
+            serial_lines.lock().unwrap().push_back(warn);
+        }
 
         if let Some(out) = stdout {
             spawn_serial_reader(out, serial_lines.clone(), serial_log_path.clone(), "", "");

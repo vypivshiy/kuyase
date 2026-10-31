@@ -14,6 +14,10 @@ const SERIAL_SNIPPETS: &[(&str, &str)] = &[
         "head -n 1 /sys/class/graphics/fb*/name",
     ),
     (
+        "LED: Бегущая радуга по кольцу (sysfs)",
+        "cd /sys/class/leds;for d in *:ring*;do echo none>$d/trigger;P=${d%%:*};done;for f in $(seq 1 24);do for i in $(seq 0 36);do for c in red green blue;do f=$((f+2));echo $((((i+f)%6<3)*250))>$P:$c:ring$i/brightness;done;done 2>/dev/null;usleep 35000;done",
+    ),
+    (
         "LED: Ручной режим sysfs (trigger=none + Красный)",
         "for d in /sys/class/leds/*:ring*; do echo none > \"$d/trigger\"; done; for d in /sys/class/leds/*:red:ring*; do echo 220 > \"$d/brightness\"; done",
     ),
@@ -24,6 +28,26 @@ const SERIAL_SNIPPETS: &[(&str, &str)] = &[
     (
         "LED: Демо конфликта триггера (запись при [ledfb-ring])",
         "for d in /sys/class/leds/*:red:ring*; do echo ledfb-ring > \"$d/trigger\"; echo 200 > \"$d/brightness\"; break; done",
+    ),
+    (
+        "Часы: Перебор всех 45 сегментов (cucumber / mini2 / plum)",
+        "for d in /sys/class/leds/*:white:clock-*; do echo 0 > \"$d/brightness\"; done; for d in /sys/class/leds/*:white:clock-*; do echo 255 > \"$d/brightness\"; usleep 35000; done",
+    ),
+    (
+        "Orion: Бегущая волна на матрице 21x12 (/dev/fb1)",
+        "for f in $(seq 0 35);do awk -v f=$f 'BEGIN{for(y=0;y<12;y++)for(x=0;x<21;x++){k=(x+f)%10;h=(k<5)?3+k:13-k;v=(y==h||y==h+1)?255:(y>h?60:0);printf \"%c%c%c\",v,v,v}}' >/dev/fb1;usleep 45000;done",
+    ),
+    (
+        "Orion: Перелив контура Ambilight (12x2 RGBW)",
+        "cd /sys/class/leds;for f in $(seq 1 24);do for i in $(seq 0 11);do echo $((((i+f)%3==0)*250))>orion:red:ambilight${i}a/brightness;echo $((((i+f)%3==1)*250))>orion:green:ambilight${i}a/brightness;echo $((((i+f)%3==2)*250))>orion:blue:ambilight${i}b/brightness;done;usleep 50000;done",
+    ),
+    (
+        "Mini 1 (SN3236): Теневые регистры I2C 0x3c -> защёлка 0x25",
+        "i2cset -y 0 0x3c 0x00 0x01; for r in $(seq 1 3 16); do i2cset -y 0 0x3c $r 0xff; i2cset -y 0 0x3c $((r+1)) 0x40; i2cset -y 0 0x3c $((r+2)) 0x90; done; sleep 1; i2cset -y 0 0x3c 0x25 0x01",
+    ),
+    (
+        "Аудио: Вывод звука через ALSA (aplay -> GUI)",
+        "dd if=/dev/urandom bs=4800 count=20 2>/dev/null | aplay -D default -q -t raw -f S16_LE -r 48000 -c 2 -",
     ),
 ];
 

@@ -1,7 +1,10 @@
 use crate::dumper::dump_from_adb;
 use crate::gui::state::GuiAppState;
-use crate::image_builder::{build_guest_image_from_dump, prepare_images};
+use crate::image_builder::{
+    build_guest_image_from_dump, ensure_persistent_data_image, prepare_images,
+};
 use eframe::egui::{self, Color32, Margin, RichText, Stroke};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -476,6 +479,82 @@ pub fn render_launcher_pane(ui: &mut egui::Ui, app: &mut GuiAppState) {
                         },
                     );
                     ui.end_row();
+
+                    // 4. Персистентный диск данных (/data)
+                    render_row_label(ui, "Диск данных (/data):");
+                    let data_img_path = app.selected_board_data_image_path();
+                    let data_img_exists = data_img_path.is_file();
+                    let data_active = app.config.persist_data_disk || data_img_exists;
+                    let (d_col, d_display) = if data_img_exists {
+                        let mb = fs::metadata(&data_img_path)
+                            .map(|m| m.len() / (1024 * 1024))
+                            .unwrap_or(512);
+                        (
+                            Color32::from_rgb(100, 230, 135),
+                            format!("{} ({} МБ)", data_img_path.display(), mb),
+                        )
+                    } else if app.config.persist_data_disk {
+                        (
+                            Color32::from_rgb(100, 230, 135),
+                            format!("{} (создастся при старте, 512 МБ)", data_img_path.display()),
+                        )
+                    } else if !app.config.clean_boot_snapshot {
+                        (
+                            Color32::from_rgb(245, 190, 90),
+                            "На корневом диске system.ext4 (Snapshot выкл.)".to_string(),
+                        )
+                    } else {
+                        (
+                            Color32::from_rgb(155, 165, 180),
+                            "Отключён (tmpfs в ОЗУ)".to_string(),
+                        )
+                    };
+                    render_path_cell(
+                        ui,
+                        d_col,
+                        &d_display,
+                        if data_active {
+                            Color32::from_rgb(215, 222, 232)
+                        } else {
+                            d_col
+                        },
+                        "Отдельный образ work/<board>-data.ext4 (quasar.data=persist) сохраняет установленные пакеты YAM / Luna / AirPlay между перезапусками и пересборками системного образа, даже при включённом Snapshot.",
+                    );
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(PATH_ACTIONS_COL_WIDTH, 20.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_width(PATH_ACTIONS_COL_WIDTH);
+                            ui.set_max_width(PATH_ACTIONS_COL_WIDTH);
+                            let mut use_disk = data_active;
+                            if ui
+                                .checkbox(&mut use_disk, "Диск")
+                                .on_hover_text("Подключать отдельный диск work/<board>-data.ext4 (512 МБ) как /data (с учётом симлинка /data -> /bkupgrade/data)")
+                                .changed()
+                            {
+                                app.config.persist_data_disk = use_disk;
+                                if !use_disk && data_img_exists {
+                                    let _ = fs::remove_file(&data_img_path);
+                                }
+                                let _ = app.save_config();
+                            }
+                            let create_label = if data_img_exists {
+                                "Очистить"
+                            } else {
+                                "Создать 512 МБ"
+                            };
+                            if ui
+                                .add_enabled(!is_busy, egui::Button::new(RichText::new(create_label).small()))
+                                .on_hover_text("Создать или пересоздать чистый образ work/<board>-data.ext4 (512 МБ) в userspace")
+                                .clicked()
+                            {
+                                app.config.persist_data_disk = true;
+                                let _ = app.save_config();
+                                spawn_create_data_disk_task(app);
+                            }
+                        },
+                    );
+                    ui.end_row();
                 });
 
             ui.add_space(6.0);
@@ -503,9 +582,94 @@ pub fn render_launcher_pane(ui: &mut egui::Ui, app: &mut GuiAppState) {
                 {
                     let _ = app.save_config();
                 }
+                ui.separator();
+                if ui
+                    .checkbox(
+                        &mut app.config.bind_all_interfaces,
+                        RichText::new("Доступ из локальной сети (0.0.0.0)").small(),
+                    )
+                    .on_hover_text(
+                        "Разрешить подключение к проброшенным портам моста (:18091), ADB (:15555) и SDK (:18090) с других устройств в локальной сети (hostfwd на 0.0.0.0 вместо 127.0.0.1).",
+                    )
+                    .changed()
+                {
+                    let _ = app.save_config();
+                }
+            });
+
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("LAN TAP-мост (wlan0):")
+                        .small()
+                        .strong(),
+                )
+                .on_hover_text(
+                    "Опциональный второй сетевой адаптер virtio-net-pci, подключённый к TAP-интерфейсу на хосте.\nГостевая ОС переименовывает адаптер с MAC 52:4b:59:* в wlan0 и получает IP по DHCP от роутера (для обнаружения колонки по AirPlay / mDNS с телефона).",
+                );
+                if ui
+                    .add_sized(
+                        [130.0, 20.0],
+                        egui::TextEdit::singleline(&mut app.config.lan_tap_interface)
+                            .desired_width(130.0)
+                            .hint_text("выкл. (напр. kytap0)"),
+                    )
+                    .on_hover_text("Имя предварительно созданного TAP-интерфейса на хосте (оставьте пустым для отключения второго адаптера)")
+                    .changed()
+                {
+                    let _ = app.save_config();
+                }
+                ui.separator();
+                ui.label(RichText::new("MAC (52:4b:59:*):").small());
+                if ui
+                    .add_sized(
+                        [145.0, 20.0],
+                        egui::TextEdit::singleline(&mut app.config.lan_mac_address)
+                            .desired_width(145.0)
+                            .hint_text(crate::session::DEFAULT_LAN_MAC_BASE),
+                    )
+                    .on_hover_text("MAC-адрес второго адаптера (должен начинаться с 52:4b:59:, чтобы гостевой init переименовал его в wlan0)")
+                    .changed()
+                {
+                    let _ = app.save_config();
+                }
+                if app.config.lan_mac_address.trim() != crate::session::DEFAULT_LAN_MAC_BASE
+                    && ui
+                        .small_button("Сброс MAC")
+                        .on_hover_text("Вернуть стандартный MAC 52:4b:59:00:00:01")
+                        .clicked()
+                {
+                    app.config.lan_mac_address = crate::session::DEFAULT_LAN_MAC_BASE.to_string();
+                    let _ = app.save_config();
+                }
             });
         },
     );
+}
+
+fn spawn_create_data_disk_task(app: &mut GuiAppState) {
+    if app.bg_task_running.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let images_dir = app.active_images_dir();
+    let board = app.config.selected_board.clone();
+    let flag = app.bg_task_running.clone();
+    let status = app.bg_task_status.clone();
+    *status.lock().unwrap() = format!("Создание образа {}-data.ext4 (512 МБ)...", board);
+
+    thread::spawn(move || {
+        match ensure_persistent_data_image(&images_dir, &board, true) {
+            Ok(path) => {
+                *status.lock().unwrap() =
+                    format!("Готов персистентный диск /data: {}", path.display());
+            }
+            Err(e) => {
+                *status.lock().unwrap() = format!("Ошибка создания data.ext4: {}", e);
+            }
+        }
+        flag.store(false, Ordering::SeqCst);
+    });
 }
 
 fn spawn_prepare_task(app: &mut GuiAppState, board: Option<String>, dump: Option<PathBuf>) {

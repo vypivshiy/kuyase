@@ -13,8 +13,62 @@ mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 mount -t tmpfs tmpfs /run 2>/dev/null || true
 mount -t tmpfs tmpfs /var/run 2>/dev/null || true
-mount -t tmpfs tmpfs /bkupgrade 2>/dev/null || true
-[ -L /data ] || mount -t tmpfs tmpfs /data 2>/dev/null || true
+
+# Optional persistent /data:
+# - quasar.data=persist mounts a spare virtio disk (ext4) onto /data (or its symlink target)
+# - quasar.data=rootfs keeps /data and /bkupgrade on the root ext4 filesystem (when -snapshot is off)
+# - quasar.data=tmpfs (default) mounts /data and /bkupgrade in RAM
+DATA_MODE="tmpfs"
+for arg in $(cat /proc/cmdline); do
+  case "$arg" in
+    quasar.data=*) DATA_MODE="${arg#quasar.data=}" ;;
+  esac
+done
+
+if [ "$DATA_MODE" != "rootfs" ]; then
+  mount -t tmpfs tmpfs /bkupgrade 2>/dev/null || true
+fi
+
+DATA_MOUNTED=0
+# Some images ship /data as a symlink (e.g. -> /bkupgrade/data), so resolve it
+# and mount the persistent disk on the real directory. `readlink -f` cannot be
+# used: the target may not exist yet.
+DATA_TARGET=/data
+if [ -L /data ]; then
+  _link=$(readlink /data 2>/dev/null || true)
+  case "$_link" in
+    /*) DATA_TARGET="$_link" ;;
+    ?*) DATA_TARGET="/bkupgrade/$_link" ;;
+  esac
+  case "$DATA_TARGET" in
+    ""|/) DATA_TARGET=/data ;;
+  esac
+fi
+
+if [ "$DATA_MODE" = "persist" ]; then
+  mkdir -p "$DATA_TARGET" 2>/dev/null || true
+  # virtio-blk disks can appear a moment after the root device; retry briefly.
+  _i=0
+  while [ "$_i" -lt 15 ] && [ "$DATA_MOUNTED" != "1" ]; do
+    for dev in /dev/vdc /dev/vdb /dev/vdd; do
+      [ -b "$dev" ] || continue
+      if mount -t ext4 "$dev" "$DATA_TARGET" 2>/dev/null; then DATA_MOUNTED=1; break; fi
+    done
+    [ "$DATA_MOUNTED" = "1" ] && break
+    _i=$((_i + 1))
+    sleep 1
+  done
+  echo "data-persist target=$DATA_TARGET mounted=$DATA_MOUNTED tries=$_i" > /tmp/data-mount.log 2>/dev/null || true
+elif [ "$DATA_MODE" = "rootfs" ]; then
+  mkdir -p "$DATA_TARGET" 2>/dev/null || true
+  DATA_MOUNTED=1
+  echo "data-rootfs target=$DATA_TARGET mounted=1" > /tmp/data-mount.log 2>/dev/null || true
+fi
+
+if [ "$DATA_MOUNTED" != "1" ]; then
+  mkdir -p "$DATA_TARGET" 2>/dev/null || true
+  mount -t tmpfs tmpfs "$DATA_TARGET" 2>/dev/null || true
+fi
 mount -t tmpfs tmpfs /sys 2>/dev/null || true
 
 chmod 666 /dev/ptmx /dev/null /dev/zero /dev/urandom /dev/tty 2>/dev/null || true
@@ -96,14 +150,63 @@ hostname "qemu-${BOARD}" 2>/dev/null || true
 # 2. Ensure loopback is up (eth0 is configured via kernel `ip=dhcp`)
 ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null || true
 
+# 2b. Optional LAN NIC. When the host passes a second virtio NIC (52:4b:59:xx,
+# a tap on a dedicated bridge) the speaker lives directly on the physical LAN,
+# so AirPlay/mDNS is reachable from a real iPhone. eth0 stays management.
+# The AirPlay plugin advertises mDNS on wlan0 only, so the NIC carries that name.
+lan_dhcp_up() {
+  tries=0
+  while [ $tries -lt 6 ]; do
+    got=0
+    # /sys/class/net is masked by the fake identity tree, so enumerate links
+    # through netlink instead.
+    for n in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1); do
+      case "$n" in
+        lo|eth0|sit0|docker*|veth*|br-*|tap*) continue ;;
+      esac
+      case "$(ip -o link show "$n" 2>/dev/null | sed -n 's/.*link\/ether \([0-9a-f:]*\).*/\1/p')" in
+        52:4b:59:*)
+          if [ "$n" != "wlan0" ]; then
+            ip link set "$n" down 2>/dev/null || true
+            ip link set "$n" name wlan0 2>/dev/null || true
+          fi
+          ;;
+        *) continue ;;
+      esac
+      n=wlan0
+      ip link set "$n" up 2>/dev/null || ifconfig "$n" up 2>/dev/null || true
+      ip -4 addr show "$n" 2>/dev/null | grep -q 'inet ' && { got=1; continue; }
+      udhcpc -i "$n" -n -q -t 6 -T 3 -s /usr/share/udhcpc/default.script \
+        >"/tmp/udhcpc-$n.log" 2>&1 || true
+      if ip -4 addr show "$n" 2>/dev/null | grep -q 'inet '; then
+        got=1
+        # renew the lease in the background
+        ( while :; do sleep 1800; \
+            udhcpc -i "$n" -n -q -t 3 -T 3 -s /usr/share/udhcpc/default.script \
+              >/dev/null 2>&1; done ) &
+      fi
+    done
+    [ "$got" = 1 ] && return 0
+    tries=$((tries + 1))
+    sleep 5
+  done
+  return 0
+}
+lan_dhcp_up &
+
 # 3. Ensure passwordless root login for ADB shell
 cat > /etc/passwd << 'EOF'
 root::0:0:root:/root:/bin/sh
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
+avahi:x:86:86:Avahi:/run/avahi:/bin/false
+dbus:x:85:85:dbus:/run/dbus:/bin/false
 EOF
 cat > /etc/group << 'EOF'
 root:x:0:
 nogroup:x:65534:
+avahi:x:86:
+dbus:x:85:
+audio:x:63:
 EOF
 echo "/bin/sh" > /etc/shells
 rm -f /etc/shadow 2>/dev/null || true
@@ -224,6 +327,11 @@ echo "$BOARD_NAME" > /sys/devices/virtual/dmi/id/product_name
 ln -sfn /tmp/fake-dt /sys/firmware/devicetree/base 2>/dev/null || true
 mount --bind /tmp/fake-dt /proc/device-tree 2>/dev/null || true
 
+# Network identity for components that read /sys/class/net (AirPlay mDNS id).
+mkdir -p /sys/class/net/eth0 /sys/class/net/wlan0
+echo 52:54:00:12:34:56 > /sys/class/net/eth0/address 2>/dev/null || true
+echo 52:54:00:12:34:57 > /sys/class/net/wlan0/address 2>/dev/null || true
+
 # Write hardware summary JSON for qemu-hw-bridge and external SDK tools
 cat > /tmp/quasar-emu-hw.json << EOF
 {
@@ -240,10 +348,23 @@ EOF
 
 # 6. Populate /sys/class/leds & /sys/class/graphics/fb*
 mkdir -p /sys/class/leds /sys/class/graphics/fb0 /sys/class/graphics/fb1 /sys/class/graphics/fb2 /sys/class/backlight/fb0 /sys/class/backlight/fb1 /sys/class/backlight/fb2
+
+# Luna reads /sys/class/graphics/fbN/{virtual_size,bits_per_pixel,stride} on
+# framebuffer-driven boards. Keep the geometry next to the board profile.
+write_fb_geom() {
+  _d="/sys/class/graphics/$1"; _w="$2"; _h="${3:-1}"
+  printf "%s,%s\n" "$_w" "$_h" > "$_d/virtual_size"
+  echo 32 > "$_d/bits_per_pixel"
+  echo $((_w * 4)) > "$_d/stride"
+}
+
 if [ "$BOARD" = "orion" ]; then
   echo "ambilight" > /sys/class/graphics/fb0/name
   echo "YNDX LED screen" > /sys/class/graphics/fb1/name
   echo "ring" > /sys/class/graphics/fb2/name
+  write_fb_geom fb0 12
+  write_fb_geom fb1 36
+  write_fb_geom fb2 36
   echo 255 > /sys/class/backlight/fb0/brightness
   echo 255 > /sys/class/backlight/fb1/brightness
   echo 255 > /sys/class/backlight/fb2/brightness
@@ -253,6 +374,11 @@ if [ "$BOARD" = "orion" ]; then
 else
   echo "ring" > /sys/class/graphics/fb0/name
   echo "YNDX LED screen" > /sys/class/graphics/fb1/name
+  case "$BOARD" in
+    station2) write_fb_geom fb0 89 ;;
+    cucumber) write_fb_geom fb0 30 ;;
+    bergamot) write_fb_geom fb0 6 ;;
+  esac
   echo 255 > /sys/class/backlight/fb0/brightness
   echo 255 > /sys/class/backlight/fb1/brightness
   [ -e /dev/fb0 ] || dd if=/dev/zero of=/dev/fb0 bs=264 count=1 2>/dev/null || true
@@ -420,6 +546,20 @@ pcm.dmixer {
   }
 }
 
+pcm.dmix_spk {
+  type dmix
+  ipc_key 2048
+  ipc_perm 0666
+  slave {
+    pcm "hw:0,0,0"
+    rate 48000
+    channels 2
+    format S16_LE
+    period_size 1024
+    buffer_size 8192
+  }
+}
+
 pcm.speakers {
   type softvol
   min_dB -60.0
@@ -520,6 +660,58 @@ for s in /etc/init.d/S99*; do
     "$s" start >/tmp/init-user.log 2>&1 &
   fi
 done
+
+mkdir -p /run/avahi 2>/dev/null || true
+chown 86:86 /run/avahi 2>/dev/null || true
+
+# AirPlay on Midi/Station 3 needs the packaged Avahi D-Bus policy on disk.
+case "$BOARD" in
+  cucumber|orion)
+    AP_POLICY=$(ls /data/yam/pkgs/station/airplay/*/share/luna/plugins/station.airplay/config/avahi-dbus.conf 2>/dev/null | head -n 1 || true)
+    if [ -n "$AP_POLICY" ]; then
+      mkdir -p /etc/dbus-1/system.d
+      cp -f "$AP_POLICY" /etc/dbus-1/system.d/avahi-dbus.conf 2>/dev/null || true
+    fi
+    ;;
+esac
+
+if [ "$BOARD" = "cucumber" ] && [ -x /usr/bin/dbus-daemon ]; then
+  mkdir -p /run/dbus /usr/local/var/run
+  chown 85:85 /run/dbus 2>/dev/null || true
+  ln -sfn /run/dbus /usr/local/var/run/dbus 2>/dev/null || true
+  if ! pidof dbus-daemon >/dev/null 2>&1; then
+    dbus-daemon --system --fork >/tmp/dbus.log 2>&1 || true
+  fi
+fi
+
+# Station 3: the firmware dbus build faults on this kernel, so start the
+# packaged ARMhf dbus-daemon from the installed AirPlay package instead.
+if [ "$BOARD" = "orion" ]; then
+  AP=$(ls -d /data/yam/pkgs/station/airplay/*/share/luna/plugins/station.airplay 2>/dev/null | head -n 1 || true)
+  if [ -n "$AP" ] && [ -x "$AP/bin/dbus-daemon" ] && [ -x "$AP/lib/ld-linux-armhf.so.3" ]; then
+    mkdir -p /run/dbus /usr/local/var/run
+    chown 85:85 /run/dbus 2>/dev/null || true
+    ln -sfn /run/dbus /usr/local/var/run/dbus 2>/dev/null || true
+    cat > /tmp/kuyase-bus.conf << 'BUSEOF'
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>system</type>
+  <listen>unix:path=/run/dbus/system_bus_socket</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow user="*"/>
+    <allow own="*"/>
+    <allow send_destination="*"/>
+    <allow receive_sender="*"/>
+  </policy>
+</busconfig>
+BUSEOF
+    if ! pidof dbus-daemon >/dev/null 2>&1; then
+      "$AP/lib/ld-linux-armhf.so.3" --library-path "$AP/lib" "$AP/bin/dbus-daemon" \
+        --config-file=/tmp/kuyase-bus.conf --fork >/tmp/dbus.log 2>&1 || true
+    fi
+  fi
+fi
 
 echo "=== [Quasar QEMU Emulator] READY: ADB (:5555), Twin (:8091) ==="
 

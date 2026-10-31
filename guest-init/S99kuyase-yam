@@ -1,0 +1,58 @@
+#!/bin/sh
+# Start an optional YAM v2 / Luna stack installed on the persistent /data disk.
+# Rendered into the guest image as /etc/init.d/S99kuyase-yam. Does nothing
+# unless /data/yam/bin/luna exists, so stock images stay untouched.
+[ -x /data/yam/bin/luna ] || exit 0
+
+MODEL="$(cat /data/yam/model 2>/dev/null || echo yandexmini_2)"
+
+# The native-volume stub must be up before AirPlay writes volume through the
+# station-volume launcher. It is a passive listener; the busy `native-volume
+# watch` is what used to eat a CPU core, and that is not started.
+if [ -x /data/volume-stub ] && ! pidof volume-stub >/dev/null 2>&1; then
+  nohup /data/volume-stub >/tmp/volume-stub.log 2>&1 &
+fi
+
+mkdir -p /data/luna /tmp/yam
+touch /data/yam/yam.lock
+
+# Luna's own boot auto-start runs while its HTTP API is not yet answering, so
+# plugins that call back into Luna time out. Start Luna with an empty service
+# list and bring AirPlay up explicitly once the API is responsive.
+#
+# Do NOT auto-start station.volume: `native-volume watch` busy-loops in the
+# emulator, eats a whole vCPU and starves Luna's HTTP API. AirPlay runs with
+# native_volume=false, so the plugin is only needed for its guard script.
+if [ -d /data/luna/plugins ]; then
+  printf '[]\n' > /data/luna/plugins/services.json
+fi
+
+if ! pidof luna >/dev/null 2>&1; then
+  nohup /data/yam/bin/luna --listen 127.0.0.1:8099 --data-dir /data/luna \
+    --model "$MODEL" --yam-root /data/yam --yam-run /data/yam \
+    >>/tmp/luna.log 2>&1 &
+fi
+
+if [ -x /data/luna-ctl ]; then
+  /data/luna-ctl wait || exit 0
+  for i in 1 2 3 4; do
+    /data/luna-ctl enable station.airplay >/dev/null 2>&1 || true
+    sleep 6
+    if /data/luna-ctl running station.airplay >/dev/null 2>&1 \
+       && netstat -ltn 2>/dev/null | grep -qE ':(5000|7000)'; then
+      break
+    fi
+    sleep 4
+  done
+  # Self-heal: only restart AirPlay when the plugin is actually dead. Checking
+  # the RTSP port would kill a slow but healthy startup.
+  (
+    while :; do
+      sleep 20
+      /data/luna-ctl running station.airplay >/dev/null 2>&1
+      if [ $? -eq 1 ]; then
+        /data/luna-ctl enable station.airplay >/dev/null 2>&1 || true
+      fi
+    done
+  ) &
+fi

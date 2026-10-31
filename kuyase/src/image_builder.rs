@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use tar::{Archive, Builder, EntryType, Header};
 
 pub const EMBEDDED_INIT_SH: &[u8] = include_bytes!("../../guest-init/equasar-qemu-init.sh");
+pub const EMBEDDED_S99_YAM: &[u8] = include_bytes!("../../guest-init/S99kuyase-yam");
+pub const DEFAULT_DATA_IMAGE_SIZE_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RootfsNodeKind {
@@ -586,6 +588,8 @@ pub fn inject_guest_files(root: &Path, tree: &mut RootfsTree) -> Result<(), Stri
     tree.insert_dir("usr", 0o755);
     tree.insert_dir("usr/local", 0o755);
     tree.insert_dir("usr/local/bin", 0o755);
+    tree.insert_dir("etc", 0o755);
+    tree.insert_dir("etc/init.d", 0o755);
 
     let init_path = root.join("guest-init").join("equasar-qemu-init.sh");
     let raw_init = if init_path.is_file() {
@@ -596,12 +600,52 @@ pub fn inject_guest_files(root: &Path, tree: &mut RootfsTree) -> Result<(), Stri
     };
     tree.insert_file("quasar-qemu-init.sh", raw_init, 0o755);
 
+    let s99_yam_path = root.join("guest-init").join("S99kuyase-yam");
+    let raw_s99_yam = if s99_yam_path.is_file() {
+        let b = fs::read(&s99_yam_path).map_err(|e| e.to_string())?;
+        normalize_crlf_to_lf(&b)
+    } else {
+        normalize_crlf_to_lf(EMBEDDED_S99_YAM)
+    };
+    tree.insert_file("etc/init.d/S99kuyase-yam", raw_s99_yam, 0o755);
+
     let bridge_bytes = match resolve_bridge_binary(root) {
         Ok(p) => fs::read(&p).map_err(|e| e.to_string())?,
         Err(_) => EMBEDDED_HW_BRIDGE.to_vec(),
     };
     tree.insert_file("usr/local/bin/qemu-hw-bridge", bridge_bytes, 0o755);
     Ok(())
+}
+
+pub fn persistent_data_image_path(images_dir: &Path, board: &str) -> PathBuf {
+    let slug = normalize_board_slug(board);
+    images_dir.join(format!("{}-data.ext4", slug))
+}
+
+pub fn ensure_persistent_data_image(
+    images_dir: &Path,
+    board: &str,
+    force_recreate: bool,
+) -> Result<PathBuf, String> {
+    let _ = fs::create_dir_all(images_dir);
+    let data_img = persistent_data_image_path(images_dir, board);
+    if !force_recreate && data_img.is_file() {
+        return Ok(data_img);
+    }
+    let mut tree = RootfsTree::default();
+    for dir in [
+        "quasar",
+        "quasar/daemons_logs",
+        "opt",
+        "opt/bin",
+        "opt/lib",
+        "yam",
+        "luna",
+    ] {
+        tree.insert_dir(dir, 0o755);
+    }
+    write_ext2_image(&tree, &data_img, DEFAULT_DATA_IMAGE_SIZE_BYTES)?;
+    Ok(data_img)
 }
 
 fn is_ignored_backup_entry(name: &str) -> bool {
@@ -895,6 +939,12 @@ mod tests {
         assert!(!init_bytes.contains(&b'\r'));
         assert_eq!(init_bytes, b"#!/bin/sh\necho hello\n");
         assert_eq!(readback.get("quasar-qemu-init.sh").unwrap().mode, 0o755);
+
+        let s99_yam_node = readback.get("etc/init.d/S99kuyase-yam").unwrap();
+        assert_eq!(s99_yam_node.mode, 0o755);
+        let s99_yam_bytes = readback.get_file_bytes("etc/init.d/S99kuyase-yam").unwrap();
+        assert!(!s99_yam_bytes.contains(&b'\r'));
+        assert!(String::from_utf8_lossy(s99_yam_bytes).contains("/data/yam/bin/luna"));
 
         let bridge_node = readback.get("usr/local/bin/qemu-hw-bridge").unwrap();
         assert_eq!(bridge_node.mode, 0o755);

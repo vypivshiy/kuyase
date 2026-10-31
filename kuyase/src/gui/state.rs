@@ -244,6 +244,10 @@ pub struct UiConfig {
     pub selected_board: String,
     pub mode: String,
     pub clean_boot_snapshot: bool,
+    pub persist_data_disk: bool,
+    pub bind_all_interfaces: bool,
+    pub lan_tap_interface: String,
+    pub lan_mac_address: String,
     pub bridge_port: u16,
     pub adb_port: u16,
     pub last_adb_target: String,
@@ -265,6 +269,10 @@ impl Default for UiConfig {
             selected_board: "cucumber".to_string(),
             mode: "stub".to_string(),
             clean_boot_snapshot: true,
+            persist_data_disk: false,
+            bind_all_interfaces: false,
+            lan_tap_interface: String::new(),
+            lan_mac_address: crate::session::DEFAULT_LAN_MAC_BASE.to_string(),
             bridge_port: 18091,
             adb_port: 15555,
             last_adb_target: "192.168.1.100:5555".to_string(),
@@ -830,6 +838,24 @@ impl GuiAppState {
         self.firmware_dumps = dumps;
     }
 
+    pub fn active_images_dir(&self) -> PathBuf {
+        let trimmed = self.config.custom_images_dir.trim();
+        if !trimmed.is_empty() {
+            let p = PathBuf::from(trimmed);
+            if p.is_dir() {
+                return p;
+            }
+        }
+        self.root_dir.join("work")
+    }
+
+    pub fn selected_board_data_image_path(&self) -> PathBuf {
+        crate::image_builder::persistent_data_image_path(
+            &self.active_images_dir(),
+            &self.config.selected_board,
+        )
+    }
+
     pub fn resolve_selected_image_path(&self) -> Option<PathBuf> {
         if !self.config.custom_image_file.trim().is_empty() {
             let cf = PathBuf::from(self.config.custom_image_file.trim());
@@ -854,6 +880,13 @@ impl GuiAppState {
         self.refresh_dependencies();
         self.refresh_images_and_dumps();
 
+        let data_img_exists = self.selected_board_data_image_path().is_file();
+        let use_persist_data = self.config.persist_data_disk || data_img_exists;
+        let lan_tap = Some(self.config.lan_tap_interface.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let lan_mac = Some(self.config.lan_mac_address.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         let mut cfg = match SessionConfig::for_board(
             &self.root_dir,
             Some(&self.config.selected_board),
@@ -867,6 +900,11 @@ impl GuiAppState {
                         board_cmdline: "auto".to_string(),
                         mode: self.config.mode.clone(),
                         snapshot: self.config.clean_boot_snapshot,
+                        persist_data: use_persist_data,
+                        bind_all: self.config.bind_all_interfaces,
+                        lan_tap: lan_tap.clone(),
+                        lan_mac: lan_mac.clone(),
+                        port_offset: 0,
                         bridge_port: self.config.bridge_port,
                         adb_port: self.config.adb_port,
                         sdk_port: Some(18090),
@@ -886,6 +924,10 @@ impl GuiAppState {
         }
         cfg.mode = self.config.mode.clone();
         cfg.snapshot = self.config.clean_boot_snapshot;
+        cfg.persist_data = use_persist_data;
+        cfg.bind_all = self.config.bind_all_interfaces;
+        cfg.lan_tap = lan_tap;
+        cfg.lan_mac = lan_mac;
         cfg.bridge_port = self.config.bridge_port;
         cfg.adb_port = self.config.adb_port;
 
@@ -1706,6 +1748,7 @@ pub fn discover_images_in_folder(dir: &Path) -> Vec<(String, PathBuf)> {
         };
         if (name.ends_with(".ext4") || name.ends_with("-system.img"))
             && !name.ends_with("-orig.ext4")
+            && !name.ends_with("-data.ext4")
         {
             let stem = name
                 .trim_end_matches("-system.ext4")
