@@ -462,6 +462,20 @@ pcm.dmixer {
   }
 }
 
+pcm.dmix_spk {
+  type dmix
+  ipc_key 2048
+  ipc_perm 0666
+  slave {
+    pcm "hw:0,0,0"
+    rate 48000
+    channels 2
+    format S16_LE
+    period_size 1024
+    buffer_size 8192
+  }
+}
+
 pcm.speakers {
   type softvol
   min_dB -60.0
