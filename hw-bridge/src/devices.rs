@@ -382,38 +382,32 @@ impl LedRingDevice for SysfsFbLedRing {
             format!("{} (Quasar Native)", trig)
         };
 
+        let first = if Path::new(&format!(
+            "/sys/class/leds/{}:red:ring0/brightness",
+            prefix
+        ))
+        .exists()
+        {
+            0
+        } else {
+            1
+        };
         let mut any_sysfs = false;
         let mut sysfs_pixels = vec![[0u8; 3]; self.leds];
         for (i, slot) in sysfs_pixels.iter_mut().enumerate().take(self.leds) {
-            let mut r = read_sysfs_u8(&format!(
+            let idx = i + first;
+            let r = read_sysfs_u8(&format!(
                 "/sys/class/leds/{}:red:ring{}/brightness",
-                prefix, i
+                prefix, idx
             ));
-            let mut g = read_sysfs_u8(&format!(
+            let g = read_sysfs_u8(&format!(
                 "/sys/class/leds/{}:green:ring{}/brightness",
-                prefix, i
+                prefix, idx
             ));
-            let mut b = read_sysfs_u8(&format!(
+            let b = read_sysfs_u8(&format!(
                 "/sys/class/leds/{}:blue:ring{}/brightness",
-                prefix, i
+                prefix, idx
             ));
-            if r == 0 && g == 0 && b == 0 {
-                r = read_sysfs_u8(&format!(
-                    "/sys/class/leds/{}:red:ring{}/brightness",
-                    prefix,
-                    i + 1
-                ));
-                g = read_sysfs_u8(&format!(
-                    "/sys/class/leds/{}:green:ring{}/brightness",
-                    prefix,
-                    i + 1
-                ));
-                b = read_sysfs_u8(&format!(
-                    "/sys/class/leds/{}:blue:ring{}/brightness",
-                    prefix,
-                    i + 1
-                ));
-            }
             if r > 0 || g > 0 || b > 0 {
                 any_sysfs = true;
             }

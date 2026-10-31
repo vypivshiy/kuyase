@@ -14,7 +14,33 @@ mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 mount -t tmpfs tmpfs /run 2>/dev/null || true
 mount -t tmpfs tmpfs /var/run 2>/dev/null || true
 mount -t tmpfs tmpfs /bkupgrade 2>/dev/null || true
-[ -L /data ] || mount -t tmpfs tmpfs /data 2>/dev/null || true
+
+# Optional persistent /data: pass quasar.data=persist on the kernel cmdline to
+# mount an ext4 data disk (any of /dev/vdc,/dev/vdb,/dev/vdd) instead of tmpfs.
+DATA_MODE="tmpfs"
+for arg in $(cat /proc/cmdline); do
+  case "$arg" in
+    quasar.data=*) DATA_MODE="${arg#quasar.data=}" ;;
+  esac
+done
+DATA_MOUNTED=0
+if [ "$DATA_MODE" = "persist" ] && [ ! -L /data ]; then
+  # virtio-blk disks can appear a moment after the root device; retry briefly.
+  _i=0
+  while [ "$_i" -lt 15 ] && [ "$DATA_MOUNTED" != "1" ]; do
+    for dev in /dev/vdc /dev/vdb /dev/vdd; do
+      [ -b "$dev" ] || continue
+      if mount -t ext4 "$dev" /data 2>/dev/null; then DATA_MOUNTED=1; break; fi
+    done
+    [ "$DATA_MOUNTED" = "1" ] && break
+    _i=$((_i + 1))
+    sleep 1
+  done
+fi
+[ "$DATA_MODE" = "persist" ] && echo "data-persist mounted=$DATA_MOUNTED tries=$_i" > /tmp/data-mount.log 2>/dev/null || true
+if [ "$DATA_MOUNTED" != "1" ] && [ ! -L /data ]; then
+  mount -t tmpfs tmpfs /data 2>/dev/null || true
+fi
 mount -t tmpfs tmpfs /sys 2>/dev/null || true
 
 chmod 666 /dev/ptmx /dev/null /dev/zero /dev/urandom /dev/tty 2>/dev/null || true
@@ -79,10 +105,15 @@ ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null || true
 cat > /etc/passwd << 'EOF'
 root::0:0:root:/root:/bin/sh
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
+avahi:x:86:86:Avahi:/run/avahi:/bin/false
+dbus:x:85:85:dbus:/run/dbus:/bin/false
 EOF
 cat > /etc/group << 'EOF'
 root:x:0:
 nogroup:x:65534:
+avahi:x:86:
+dbus:x:85:
+audio:x:63:
 EOF
 echo "/bin/sh" > /etc/shells
 rm -f /etc/shadow 2>/dev/null || true
@@ -112,10 +143,17 @@ case "$BOARD" in
     ;;
   yandexmini2)
     printf "Yandex Station Mini 2\0" > /tmp/fake-dt/model
-    printf "yandex,mini2\0amlogic,axg\0" > /tmp/fake-dt/compatible
+    printf "yandex,station-mini2\0amlogic,axg\0" > /tmp/fake-dt/compatible
     printf "axg_mini2_es\0" > /tmp/fake-dt/amlogic-dt-id
-    BOARD_NAME="Яндекс Станция Мини 2 (YNDX-00021 / yandexmini2)"
-    SYSFS_PREFIX="mini2"; RING_LEDS=6; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="true"; LED_DRIVER="sysfs"
+    BOARD_NAME="Яндекс Станция Мини 2 с часами (YNDX-00021 / yandexmini2)"
+    SYSFS_PREFIX="mini2"; RING_START=1; RING_LEDS=6; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="true"; LED_DRIVER="sysfs"
+    ;;
+  yandexmini2nc)
+    printf "Yandex Station Mini 2\0" > /tmp/fake-dt/model
+    printf "yandex,station-mini2\0amlogic,axg\0" > /tmp/fake-dt/compatible
+    printf "axg_mini2_es\0" > /tmp/fake-dt/amlogic-dt-id
+    BOARD_NAME="Яндекс Станция Мини 2 без часов (YNDX-00020 / yandexmini2nc)"
+    SYSFS_PREFIX="mini2"; RING_START=1; RING_LEDS=6; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="false"; LED_DRIVER="sysfs"
     ;;
   bergamot)
     printf "Yandex Bergamot\0" > /tmp/fake-dt/model
@@ -130,22 +168,28 @@ case "$BOARD" in
     SYSFS_PREFIX="pickle"; RING_LEDS=16; LOGO_LEDS=6; AMBILIGHT_LEDS=0; HAS_CLOCK="true"; LED_DRIVER="sysfs"
     ;;
   plum)
-    printf "Yandex Plum\0" > /tmp/fake-dt/model
-    printf "yandex,plum\0amlogic,axg\0" > /tmp/fake-dt/compatible
-    BOARD_NAME="Яндекс Станция Лайт 2 (plum)"
-    SYSFS_PREFIX="plum"; RING_LEDS=6; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="true"; LED_DRIVER="sysfs"
+    printf "Yandex Plum EVT2\0" > /tmp/fake-dt/model
+    printf "yandex,plum-evt2\0yandex,plum\0amlogic,axg\0" > /tmp/fake-dt/compatible
+    BOARD_NAME="Яндекс Станция Лайт 2 Plum (3 LED + часы)"
+    SYSFS_PREFIX="plum"; RING_START=1; RING_LEDS=3; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="true"; LED_DRIVER="sysfs"
+    ;;
+  plumnc)
+    printf "Yandex Prune EVT2\0" > /tmp/fake-dt/model
+    printf "yandex,prune-evt2\0yandex,prune\0amlogic,axg\0" > /tmp/fake-dt/compatible
+    BOARD_NAME="Яндекс Станция Лайт 2 Prune (3 LED, без часов)"
+    SYSFS_PREFIX="plum"; RING_START=1; RING_LEDS=3; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="false"; LED_DRIVER="sysfs"
     ;;
   yandexmicro)
     printf "Yandex Station Lite\0" > /tmp/fake-dt/model
     printf "yandex,yandexmicro\0amlogic,axg\0" > /tmp/fake-dt/compatible
     BOARD_NAME="Яндекс Станция Лайт 1 (YNDX-00025 / yandexmicro)"
-    SYSFS_PREFIX="micro"; RING_LEDS=3; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="false"; LED_DRIVER="sysfs"
+    SYSFS_PREFIX="micro"; RING_START=1; RING_LEDS=3; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="false"; LED_DRIVER="sysfs"
     ;;
   station2)
-    printf "Yandex Station 2\0" > /tmp/fake-dt/model
+    printf "Yandex Station Midi\0" > /tmp/fake-dt/model
     printf "yandex,station-midi\0amlogic,axg\0" > /tmp/fake-dt/compatible
-    BOARD_NAME="Яндекс Станция 2 (YNDX-00051 / station2)"
-    SYSFS_PREFIX="station2"; RING_LEDS=64; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="false"; LED_DRIVER="framebuffer"
+    BOARD_NAME="Яндекс Станция 2 (YNDX-00051 / station-midi)"
+    SYSFS_PREFIX="station2"; RING_LEDS=88; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="false"; LED_DRIVER="framebuffer"
     ;;
   mango)
     printf "Yandex Station Mango DVT\0" > /tmp/fake-dt/model
@@ -190,6 +234,11 @@ echo "$BOARD_NAME" > /sys/devices/virtual/dmi/id/product_name
 ln -sfn /tmp/fake-dt /sys/firmware/devicetree/base 2>/dev/null || true
 mount --bind /tmp/fake-dt /proc/device-tree 2>/dev/null || true
 
+# Network identity for components that read /sys/class/net (AirPlay mDNS id).
+mkdir -p /sys/class/net/eth0 /sys/class/net/wlan0
+echo 52:54:00:12:34:56 > /sys/class/net/eth0/address 2>/dev/null || true
+echo 52:54:00:12:34:57 > /sys/class/net/wlan0/address 2>/dev/null || true
+
 # Write hardware summary JSON for qemu-hw-bridge and external SDK tools
 cat > /tmp/quasar-emu-hw.json << EOF
 {
@@ -206,10 +255,23 @@ EOF
 
 # 6. Populate /sys/class/leds & /sys/class/graphics/fb*
 mkdir -p /sys/class/leds /sys/class/graphics/fb0 /sys/class/graphics/fb1 /sys/class/graphics/fb2 /sys/class/backlight/fb0 /sys/class/backlight/fb1 /sys/class/backlight/fb2
+
+# Luna reads /sys/class/graphics/fbN/{virtual_size,bits_per_pixel,stride} on
+# framebuffer-driven boards. Keep the geometry next to the board profile.
+write_fb_geom() {
+  _d="/sys/class/graphics/$1"; _w="$2"; _h="${3:-1}"
+  printf "%s,%s\n" "$_w" "$_h" > "$_d/virtual_size"
+  echo 32 > "$_d/bits_per_pixel"
+  echo $((_w * 4)) > "$_d/stride"
+}
+
 if [ "$BOARD" = "orion" ]; then
   echo "ambilight" > /sys/class/graphics/fb0/name
   echo "YNDX LED screen" > /sys/class/graphics/fb1/name
   echo "ring" > /sys/class/graphics/fb2/name
+  write_fb_geom fb0 12
+  write_fb_geom fb1 36
+  write_fb_geom fb2 36
   echo 255 > /sys/class/backlight/fb0/brightness
   echo 255 > /sys/class/backlight/fb1/brightness
   echo 255 > /sys/class/backlight/fb2/brightness
@@ -219,6 +281,11 @@ if [ "$BOARD" = "orion" ]; then
 else
   echo "ring" > /sys/class/graphics/fb0/name
   echo "YNDX LED screen" > /sys/class/graphics/fb1/name
+  case "$BOARD" in
+    station2) write_fb_geom fb0 89 ;;
+    cucumber) write_fb_geom fb0 30 ;;
+    bergamot) write_fb_geom fb0 6 ;;
+  esac
   echo 255 > /sys/class/backlight/fb0/brightness
   echo 255 > /sys/class/backlight/fb1/brightness
   [ -e /dev/fb0 ] || dd if=/dev/zero of=/dev/fb0 bs=192 count=1 2>/dev/null || true
@@ -226,8 +293,9 @@ else
 fi
 
 if [ "$LED_DRIVER" != "i2c_sn3236" ]; then
-  i=0
-  while [ $i -le "$RING_LEDS" ]; do
+  RING_START="${RING_START:-0}"
+  i=$RING_START
+  while [ $i -lt $((RING_START + RING_LEDS)) ]; do
     for c in red green blue; do
       d="/sys/class/leds/${SYSFS_PREFIX}:${c}:ring${i}"
       mkdir -p "$d"
@@ -477,6 +545,58 @@ for s in /etc/init.d/S99*; do
     "$s" start >/tmp/init-user.log 2>&1 &
   fi
 done
+
+mkdir -p /run/avahi 2>/dev/null || true
+chown 86:86 /run/avahi 2>/dev/null || true
+
+# AirPlay on Midi/Station 3 needs the packaged Avahi D-Bus policy on disk.
+case "$BOARD" in
+  cucumber|orion)
+    AP_POLICY=$(ls /data/yam/pkgs/station/airplay/*/share/luna/plugins/station.airplay/config/avahi-dbus.conf 2>/dev/null | head -n 1 || true)
+    if [ -n "$AP_POLICY" ]; then
+      mkdir -p /etc/dbus-1/system.d
+      cp -f "$AP_POLICY" /etc/dbus-1/system.d/avahi-dbus.conf 2>/dev/null || true
+    fi
+    ;;
+esac
+
+if [ "$BOARD" = "cucumber" ] && [ -x /usr/bin/dbus-daemon ]; then
+  mkdir -p /run/dbus /usr/local/var/run
+  chown 85:85 /run/dbus 2>/dev/null || true
+  ln -sfn /run/dbus /usr/local/var/run/dbus 2>/dev/null || true
+  if ! pidof dbus-daemon >/dev/null 2>&1; then
+    dbus-daemon --system --fork >/tmp/dbus.log 2>&1 || true
+  fi
+fi
+
+# Station 3: the firmware dbus build faults on this kernel, so start the
+# packaged ARMhf dbus-daemon from the installed AirPlay package instead.
+if [ "$BOARD" = "orion" ]; then
+  AP=$(ls -d /data/yam/pkgs/station/airplay/*/share/luna/plugins/station.airplay 2>/dev/null | head -n 1 || true)
+  if [ -n "$AP" ] && [ -x "$AP/bin/dbus-daemon" ] && [ -x "$AP/lib/ld-linux-armhf.so.3" ]; then
+    mkdir -p /run/dbus /usr/local/var/run
+    chown 85:85 /run/dbus 2>/dev/null || true
+    ln -sfn /run/dbus /usr/local/var/run/dbus 2>/dev/null || true
+    cat > /tmp/kuyase-bus.conf << 'BUSEOF'
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>system</type>
+  <listen>unix:path=/run/dbus/system_bus_socket</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow user="*"/>
+    <allow own="*"/>
+    <allow send_destination="*"/>
+    <allow receive_sender="*"/>
+  </policy>
+</busconfig>
+BUSEOF
+    if ! pidof dbus-daemon >/dev/null 2>&1; then
+      "$AP/lib/ld-linux-armhf.so.3" --library-path "$AP/lib" "$AP/bin/dbus-daemon" \
+        --config-file=/tmp/kuyase-bus.conf --fork >/tmp/dbus.log 2>&1 || true
+    fi
+  fi
+fi
 
 echo "=== [Quasar QEMU Emulator] READY: ADB (:5555), Twin (:8091) ==="
 
