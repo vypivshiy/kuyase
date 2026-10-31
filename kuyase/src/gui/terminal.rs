@@ -1,7 +1,41 @@
-use crate::gui::launcher;
 use crate::gui::state::{GuiAppState, SignalDirection, SignalFilter};
 use crate::session::strip_ansi_and_control_chars;
-use eframe::egui::{self, Color32, FontId, Margin, RichText};
+use eframe::egui::{self, Color32, FontId, Margin, RichText, Stroke};
+
+const SERIAL_SNIPPETS: &[(&str, &str)] = &[
+    (
+        "Профиль железа (/tmp/quasar-emu-hw.json)",
+        "cat /tmp/quasar-emu-hw.json",
+    ),
+    ("Список процессов (ps)", "ps"),
+    ("Сетевые сокеты (netstat -tlpn)", "netstat -tlpn"),
+    (
+        "Фреймбуферы (/sys/class/graphics/fb*/name)",
+        "head -n 1 /sys/class/graphics/fb*/name",
+    ),
+    (
+        "LED: Ручной режим sysfs (trigger=none + Красный)",
+        "for d in /sys/class/leds/*:ring*; do echo none > \"$d/trigger\"; done; for d in /sys/class/leds/*:red:ring*; do echo 220 > \"$d/brightness\"; done",
+    ),
+    (
+        "LED: Возврат триггера Quasar (ledfb-ring)",
+        "for d in /sys/class/leds/*:ring*; do echo 0 > \"$d/brightness\"; echo ledfb-ring > \"$d/trigger\"; done",
+    ),
+    (
+        "LED: Демо конфликта триггера (запись при [ledfb-ring])",
+        "for d in /sys/class/leds/*:red:ring*; do echo ledfb-ring > \"$d/trigger\"; echo 200 > \"$d/brightness\"; break; done",
+    ),
+];
+
+fn set_text_edit_cursor_to_end(ctx: &egui::Context, id: egui::Id, text: &str) {
+    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
+        let ccursor = egui::text::CCursor::new(text.chars().count());
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(ccursor)));
+        state.store(ctx, id);
+    }
+}
 
 pub fn render_bottom_dock(ui: &mut egui::Ui, app: &mut GuiAppState) {
     ui.horizontal_wrapped(|ui| {
@@ -10,21 +44,13 @@ pub fn render_bottom_dock(ui: &mut egui::Ui, app: &mut GuiAppState) {
         } else {
             "Свернуть панель логов [-]"
         };
-        if ui.button(RichText::new(collapse_label).strong()).clicked() {
+        if ui
+            .button(RichText::new(collapse_label).strong())
+            .on_hover_text("Свернуть или развернуть нижнюю панель. Высоту открытой панели можно плавно менять перетаскиванием её верхней границы с зажатой ЛКМ.")
+            .clicked()
+        {
             app.config.dock_collapsed = !app.config.dock_collapsed;
             let _ = app.save_config();
-        }
-
-        if !app.config.dock_collapsed {
-            let size_label = if app.config.dock_large {
-                "Высота: Обычная"
-            } else {
-                "Высота: Большая"
-            };
-            if ui.button(size_label).clicked() {
-                app.config.dock_large = !app.config.dock_large;
-                let _ = app.save_config();
-            }
         }
 
         ui.separator();
@@ -33,7 +59,6 @@ pub fn render_bottom_dock(ui: &mut egui::Ui, app: &mut GuiAppState) {
             ("signals", "Лог сигналов (TX / RX)"),
             ("serial", "Интерактивный терминал ttyAMA0"),
             ("maind", "Лог демона maind.log"),
-            ("images_adb", "Образы, ADB и QEMU"),
         ] {
             let active = app.config.active_terminal_tab == tab_id && !app.config.dock_collapsed;
             if ui
@@ -94,8 +119,49 @@ pub fn render_bottom_dock(ui: &mut egui::Ui, app: &mut GuiAppState) {
                     app.clear_signals();
                 }
             } else if app.config.active_terminal_tab == "serial" {
-                if let Some(ref sess) = app.session {
-                    if ui.button("Очистить консоль").clicked() {
+                let vm_running = app.session.is_some();
+                ui.menu_button("Быстрые команды ▾", |ui| {
+                    ui.set_min_width(320.0);
+                    ui.label(
+                        RichText::new("Готовые диагностические сниппеты для ttyAMA0:")
+                            .small()
+                            .color(Color32::from_rgb(160, 170, 185)),
+                    );
+                    ui.separator();
+                    for &(label, cmd) in SERIAL_SNIPPETS {
+                        if ui
+                            .add_enabled(vm_running, egui::Button::new(label))
+                            .on_hover_text(cmd)
+                            .clicked()
+                        {
+                            app.send_serial_command(cmd);
+                            ui.close_menu();
+                        }
+                    }
+                });
+                if ui
+                    .add_enabled(vm_running, egui::Button::new("Ctrl+C"))
+                    .on_hover_text("Отправить сигнал прерывания SIGINT (0x03) в консоль ttyAMA0")
+                    .clicked()
+                {
+                    app.send_serial_command("\x03");
+                }
+                if ui
+                    .button("Копировать")
+                    .on_hover_text("Скопировать весь вывод консоли ttyAMA0 в буфер обмена")
+                    .clicked()
+                {
+                    if let Some(ref sess) = app.session {
+                        let joined = sess.serial_lines().join("\n");
+                        ui.ctx().copy_text(joined);
+                    }
+                }
+                if ui
+                    .button("Очистить")
+                    .on_hover_text("Очистить вывод терминала (горячая клавиша: Ctrl+L)")
+                    .clicked()
+                {
+                    if let Some(ref sess) = app.session {
                         sess.clear_serial_lines();
                     }
                 }
@@ -115,7 +181,6 @@ pub fn render_bottom_dock(ui: &mut egui::Ui, app: &mut GuiAppState) {
     match app.config.active_terminal_tab.as_str() {
         "serial" => render_serial_console_tab(ui, app),
         "maind" => render_maind_log_tab(ui, app),
-        "images_adb" => launcher::render_launcher_pane(ui, app),
         _ => render_signal_log_tab(ui, app),
     }
 }
@@ -153,10 +218,13 @@ fn render_signal_log_tab(ui: &mut egui::Ui, app: &mut GuiAppState) {
                                 entry.category.as_str(),
                                 strip_ansi_and_control_chars(&entry.message)
                             );
-                            ui.label(
-                                RichText::new(line)
-                                    .font(FontId::monospace(13.2))
-                                    .color(color),
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(line)
+                                        .font(FontId::monospace(13.2))
+                                        .color(color),
+                                )
+                                .selectable(true),
                             );
                         }
                     }
@@ -164,65 +232,44 @@ fn render_signal_log_tab(ui: &mut egui::Ui, app: &mut GuiAppState) {
         });
 }
 
+fn classify_serial_line_color(clean: &str) -> Color32 {
+    if clean.starts_with("===") {
+        Color32::from_rgb(87, 227, 137)
+    } else if clean.starts_with("~ #") || clean.starts_with("/ #") || clean.starts_with("root@") {
+        Color32::from_rgb(130, 200, 255)
+    } else if clean.contains("error")
+        || clean.contains("Error")
+        || clean.contains("FAIL")
+        || clean.contains("panic")
+    {
+        Color32::from_rgb(255, 120, 120)
+    } else if clean.starts_with("[qemu]") || clean.contains("can't access tty") {
+        Color32::from_rgb(165, 175, 190)
+    } else {
+        Color32::from_rgb(222, 230, 240)
+    }
+}
+
 fn render_serial_console_tab(ui: &mut egui::Ui, app: &mut GuiAppState) {
+    let vm_running = app.session.is_some();
+    let board = app
+        .latest_state
+        .as_ref()
+        .map(|s| s.board_slug.clone())
+        .unwrap_or_else(|| app.config.selected_board.clone());
     let lines = app
         .session
         .as_ref()
         .map(|s| s.serial_lines())
         .unwrap_or_default();
 
-    egui::TopBottomPanel::bottom("serial_input_bar_inner")
-        .frame(egui::Frame::none().inner_margin(Margin::symmetric(0.0, 4.0)))
-        .show_inside(ui, |ui| {
-            let vm_running = app.session.is_some();
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("ttyAMA0 #").font(FontId::monospace(13.5)));
-                let input_w = (ui.available_width() * 0.38).clamp(160.0, 420.0);
-                let resp = ui.add_enabled(
-                    vm_running,
-                    egui::TextEdit::singleline(&mut app.serial_input)
-                        .font(FontId::monospace(13.5))
-                        .desired_width(input_w)
-                        .hint_text("Введите root-команду и нажмите Enter..."),
-                );
-                let enter_pressed =
-                    resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if enter_pressed
-                    || ui
-                        .add_enabled(vm_running, egui::Button::new("Отправить"))
-                        .clicked()
-                {
-                    let cmd = app.serial_input.clone();
-                    app.serial_input.clear();
-                    app.send_serial_command(&cmd);
-                    resp.request_focus();
-                }
-                for (label, cmd) in [
-                    ("Ctrl+C", "\x03"),
-                    ("hw.json", "cat /tmp/quasar-emu-hw.json"),
-                    (
-                        "LED sysfs (none + Красный)",
-                        "for d in /sys/class/leds/*:ring*; do echo none > \"$d/trigger\"; done; for d in /sys/class/leds/*:red:ring*; do echo 220 > \"$d/brightness\"; done",
-                    ),
-                    (
-                        "LED возврат ledfb-ring",
-                        "for d in /sys/class/leds/*:ring*; do echo ledfb-ring > \"$d/trigger\"; done",
-                    ),
-                    ("ps", "ps"),
-                ] {
-                    if ui
-                        .add_enabled(vm_running, egui::Button::new(label))
-                        .clicked()
-                    {
-                        app.send_serial_command(cmd);
-                    }
-                }
-            });
-        });
+    let scroll_height = ui.available_height().max(60.0);
+    let prompt_id = ui.make_persistent_id("ide_serial_inline_prompt");
 
-    let scroll_height = ui.available_height().max(50.0);
     egui::Frame::canvas(ui.style())
-        .fill(Color32::from_rgb(16, 18, 22))
+        .fill(Color32::from_rgb(14, 16, 20))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(45, 52, 64)))
+        .inner_margin(Margin::symmetric(10.0, 6.0))
         .show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("tty_serial_scroll")
@@ -231,24 +278,138 @@ fn render_serial_console_tab(ui: &mut egui::Ui, app: &mut GuiAppState) {
                 .stick_to_bottom(app.terminal_autoscroll)
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
-                    if lines.is_empty() {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+
+                    if !vm_running && lines.is_empty() {
                         ui.label(
-                            RichText::new(if app.session.is_some() {
-                                "Ожидание вывода консоли ttyAMA0..."
-                            } else {
-                                "ВМ остановлена. Нажмите 'Запустить образ (Старт ВМ)' в верхней панели для запуска ttyAMA0."
-                            })
-                            .font(FontId::monospace(13.5))
+                            RichText::new(
+                                "Терминал ttyAMA0 не активен (ВМ остановлена). Нажмите «Запустить образ (Старт ВМ)» в верхней панели.",
+                            )
+                            .font(FontId::monospace(13.2))
                             .color(Color32::from_rgb(145, 155, 170)),
                         );
                     } else {
                         for line in &lines {
                             let clean = strip_ansi_and_control_chars(line);
-                            ui.label(
-                                RichText::new(clean)
-                                    .font(FontId::monospace(13.2))
-                                    .color(Color32::from_rgb(220, 230, 240)),
+                            if clean.trim() == "~ #" {
+                                continue;
+                            }
+                            let col = classify_serial_line_color(&clean);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&clean)
+                                        .font(FontId::monospace(13.2))
+                                        .color(col),
+                                )
+                                .selectable(true),
                             );
+                        }
+                    }
+
+                    ui.add_space(2.0);
+                    let mut prompt_resp = None;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let cwd_display = if app.serial_cwd.is_empty() {
+                            "/"
+                        } else {
+                            &app.serial_cwd
+                        };
+                        let prompt_prefix = format!("root@{}:{}#", board, cwd_display);
+                        let prefix_col = if vm_running {
+                            Color32::from_rgb(87, 227, 137)
+                        } else {
+                            Color32::from_rgb(120, 130, 145)
+                        };
+                        ui.label(
+                            RichText::new(prompt_prefix)
+                                .font(FontId::monospace(13.5))
+                                .strong()
+                                .color(prefix_col),
+                        );
+
+                        let has_prompt_focus = ui.ctx().memory(|m| m.has_focus(prompt_id));
+                        let mut move_cursor_to_end = false;
+
+                        if has_prompt_focus && vm_running {
+                            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab))
+                            {
+                                app.tab_complete_serial_input();
+                                app.terminal_autoscroll = true;
+                                move_cursor_to_end = true;
+                            }
+                            if ui.input_mut(|i| {
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                            }) && app.history_up()
+                            {
+                                move_cursor_to_end = true;
+                            }
+                            if ui.input_mut(|i| {
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                            }) && app.history_down()
+                            {
+                                move_cursor_to_end = true;
+                            }
+                            if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::L))
+                            {
+                                if let Some(ref sess) = app.session {
+                                    sess.clear_serial_lines();
+                                }
+                            }
+                            if app.serial_input.is_empty()
+                                && ui.input_mut(|i| {
+                                    i.consume_key(egui::Modifiers::CTRL, egui::Key::C)
+                                })
+                            {
+                                app.send_serial_command("\x03");
+                            }
+                        }
+
+                        if move_cursor_to_end {
+                            set_text_edit_cursor_to_end(ui.ctx(), prompt_id, &app.serial_input);
+                        }
+
+                        let resp = ui.add_enabled(
+                            vm_running,
+                            egui::TextEdit::singleline(&mut app.serial_input)
+                                .id(prompt_id)
+                                .frame(false)
+                                .lock_focus(true)
+                                .font(FontId::monospace(13.5))
+                                .text_color(Color32::from_rgb(242, 247, 255))
+                                .desired_width(ui.available_width().max(120.0)),
+                        );
+
+                        if app.serial_input.contains('\t') {
+                            app.tab_complete_serial_input();
+                            app.terminal_autoscroll = true;
+                            set_text_edit_cursor_to_end(ui.ctx(), resp.id, &app.serial_input);
+                        } else if move_cursor_to_end {
+                            set_text_edit_cursor_to_end(ui.ctx(), resp.id, &app.serial_input);
+                        }
+
+                        let enter_pressed = (resp.has_focus() || resp.lost_focus())
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if enter_pressed && vm_running {
+                            let cmd = app.serial_input.clone();
+                            app.serial_input.clear();
+                            app.send_serial_command(&cmd);
+                            app.terminal_autoscroll = true;
+                            resp.request_focus();
+                        }
+
+                        prompt_resp = Some(resp);
+                    });
+
+                    // Clicking empty terminal space focuses the inline prompt like in VS Code / JetBrains
+                    let rem_h = ui.available_height().max(18.0);
+                    let (_, empty_resp) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), rem_h),
+                        egui::Sense::click(),
+                    );
+                    if empty_resp.clicked() {
+                        if let Some(resp) = prompt_resp {
+                            resp.request_focus();
                         }
                     }
                 });
@@ -282,17 +443,16 @@ fn render_maind_log_tab(ui: &mut egui::Ui, app: &mut GuiAppState) {
                     } else {
                         for line in &lines {
                             let clean = strip_ansi_and_control_chars(line);
-                            ui.label(
-                                RichText::new(clean)
-                                    .font(FontId::monospace(13.2))
-                                    .color(Color32::from_rgb(215, 225, 240)),
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(clean)
+                                        .font(FontId::monospace(13.2))
+                                        .color(Color32::from_rgb(215, 225, 240)),
+                                )
+                                .selectable(true),
                             );
                         }
                     }
                 });
         });
-}
-
-pub fn render_terminal_pane(ui: &mut egui::Ui, app: &mut GuiAppState) {
-    render_bottom_dock(ui, app);
 }

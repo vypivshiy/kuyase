@@ -31,11 +31,13 @@ pub fn default_board_ring_leds(slug: &str) -> usize {
     match slug {
         "cucumber" => 24,
         "orion" => 36,
-        "yandexmini2" | "yandexmini2nc" | "bergamot" => 6,
+        "yandexmini" | "yandexmini2" | "yandexmini2nc" | "bergamot" => 6,
         "pickle" => 16,
         "plum" | "plumnc" | "yandexmicro" => 3,
         "station2" => 88,
-        _ => 4,
+        "mango" => 4,
+        "saturn" => 1,
+        _ => 6,
     }
 }
 
@@ -466,9 +468,9 @@ pub fn render_twin_canvas(ui: &mut egui::Ui, app: &mut GuiAppState) {
                     stage_box_frame(ui, |ui| {
                         ui.horizontal_wrapped(|ui| {
                             let trig_txt = if st.ring_trigger.is_empty() {
-                                format!("Кольцо {} LED", st.ring_leds)
+                                format!("Драйвер LED: Кольцо {} LED", st.ring_leds)
                             } else {
-                                format!("Триггер: {}", st.ring_trigger)
+                                format!("Драйвер LED: {}", st.ring_trigger)
                             };
                             let trig_col = if st.ring_trigger.contains("none") {
                                 Color32::from_rgb(120, 210, 255)
@@ -477,36 +479,133 @@ pub fn render_twin_canvas(ui: &mut egui::Ui, app: &mut GuiAppState) {
                             } else {
                                 Color32::from_rgb(165, 175, 190)
                             };
-                            ui.label(RichText::new(trig_txt).small().color(trig_col));
-                            if st.led_trigger_conflict_count > 0 {
-                                ui.label(
+                            ui.label(RichText::new(trig_txt).small().color(trig_col))
+                                .on_hover_text(
+                                    "Режим драйвера светового кольца:\n\
+                                     • ledfb-ring (Quasar Native) — штатная анимация прошивки через фреймбуфер\n\
+                                     • none (Custom Override) — прямое ручное управление яркостью через /sys/class/leds/*:ring*/brightness\n\
+                                     • SN3236 (0x3c) — аппаратный I2C-контроллер на yandexmini",
+                                );
+
+                            if board_slug == "yandexmini" {
+                                let tof_near = st.tof_mm < 400;
+                                let (tof_fg, tof_bg) = if tof_near {
+                                    (
+                                        Color32::from_rgb(255, 225, 100),
+                                        Color32::from_rgb(66, 52, 18),
+                                    )
+                                } else {
+                                    (
+                                        Color32::from_rgb(155, 205, 250),
+                                        Color32::from_rgb(28, 42, 60),
+                                    )
+                                };
+                                let tof_label = if tof_near {
+                                    format!("Датчик ToF (VL53L0X): {} мм (РУКА)", st.tof_mm)
+                                } else {
+                                    format!("Датчик ToF (VL53L0X): {} мм", st.tof_mm)
+                                };
+                                ui.add(
+                                    egui::Button::new(
+                                        RichText::new(tof_label).small().monospace().color(tof_fg),
+                                    )
+                                    .fill(tof_bg)
+                                    .rounding(99.0)
+                                    .sense(Sense::hover()),
+                                )
+                                .on_hover_text(
+                                    "Оптический лазерный дальномер приближения STM VL53L0X (устанавливался только в Яндекс Станцию Мини 1 / yandexmini).\n\
+                                     Дистанция < 400 мм означает поднесённую ладонь над крышкой колонки (жест управления громкостью / остановки).\n\
+                                     Дистанция 8190 мм — препятствий над колонкой нет.",
+                                );
+                            } else if board_slug == "orion" {
+                                let us_near = st.tof_mm < 1500;
+                                let (us_fg, us_bg) = if us_near {
+                                    (
+                                        Color32::from_rgb(255, 225, 100),
+                                        Color32::from_rgb(66, 52, 18),
+                                    )
+                                } else {
+                                    (
+                                        Color32::from_rgb(155, 205, 250),
+                                        Color32::from_rgb(28, 42, 60),
+                                    )
+                                };
+                                let us_label = format!("Ультразвук 38.4 кГц: эхо {} мм", st.tof_mm);
+                                ui.add(
+                                    egui::Button::new(
+                                        RichText::new(us_label).small().monospace().color(us_fg),
+                                    )
+                                    .fill(us_bg)
+                                    .rounding(99.0)
+                                    .sense(Sense::hover()),
+                                )
+                                .on_hover_text(
+                                    "На Станции 3 (orion) нет оптического датчика VL53L0X (ToF).\n\
+                                     Вместо него используется отдельный ультразвуковой TDM-тракт pcm.ultrasound (96 кГц, несущая 38.4 кГц) через четвёртый усилитель ACM8625S (2-002c) и микрофонную матрицу.",
+                                );
+                            } else {
+                                let als_label =
+                                    format!("Датчик света (ALS): {} лк", st.als_lux);
+                                ui.add(
+                                    egui::Button::new(
+                                        RichText::new(als_label)
+                                            .small()
+                                            .monospace()
+                                            .color(Color32::from_rgb(155, 205, 250)),
+                                    )
+                                    .fill(Color32::from_rgb(28, 42, 60))
+                                    .rounding(99.0)
+                                    .sense(Sense::hover()),
+                                )
+                                .on_hover_text(
+                                    "Датчик внешней освещённости ALS (ltr308als01 в /sys/bus/iio/devices/iio:device0/in_illuminance_raw).\n\
+                                     Используется прошивкой для автояркости светового кольца и дисплея часов (оптического датчика жестов VL53L0X на этой модели нет).",
+                                );
+                            }
+                        });
+
+                        if st.led_trigger_conflict_count > 0 {
+                            ui.add_space(2.0);
+                            ui.horizontal_wrapped(|ui| {
+                                let conflict_badge = egui::Button::new(
                                     RichText::new(format!(
-                                        "| Конфликтов: {}",
+                                        "Конфликт записи sysfs LED: {} (?)",
                                         st.led_trigger_conflict_count
                                     ))
                                     .small()
                                     .strong()
-                                    .color(Color32::from_rgb(255, 105, 105)),
+                                    .color(Color32::from_rgb(255, 130, 130)),
+                                )
+                                .fill(Color32::from_rgb(68, 26, 30))
+                                .stroke(Stroke::new(1.0, Color32::from_rgb(150, 55, 60)))
+                                .rounding(6.0)
+                                .sense(Sense::hover());
+
+                                ui.add(conflict_badge).on_hover_text(
+                                    "Что означает «Конфликт записи sysfs LED» (Trigger Conflict):\n\
+                                     Была выполнена прямая запись яркости в /sys/class/leds/*:ring*/brightness,\n\
+                                     пока световое кольцо находилось под управлением триггера драйвера [ledfb-ring].\n\n\
+                                     При активном [ledfb-ring] драйвер отклоняет прямую запись в sysfs и сбрасывает brightness в 0.\n\
+                                     Чтобы управлять светодиодами вручную через sysfs, сначала переключите триггер в режим 'none':\n\
+                                     echo none > /sys/class/leds/*:ring*/trigger",
                                 );
-                            }
-                            let tof_near = st.tof_mm < 400;
-                            let tof_col = if tof_near {
-                                Color32::from_rgb(250, 210, 90)
-                            } else {
-                                Color32::from_rgb(150, 195, 245)
-                            };
-                            ui.separator();
-                            ui.label(
-                                RichText::new(if tof_near {
-                                    format!("ToF: {} мм (РУКА)", st.tof_mm)
-                                } else {
-                                    format!("ToF: {} мм", st.tof_mm)
-                                })
-                                .small()
-                                .monospace()
-                                .color(tof_col),
-                            );
-                        });
+
+                                if app.session.is_some() {
+                                    let is_custom = st.ring_trigger.contains("none");
+                                    if !is_custom
+                                        && ui
+                                            .small_button("Переключить в sysfs (none)")
+                                            .on_hover_text("Отключить триггер ledfb-ring для прямой записи яркости через sysfs")
+                                            .clicked()
+                                    {
+                                        app.send_serial_command(
+                                            "for d in /sys/class/leds/*:ring*; do echo none > \"$d/trigger\"; done",
+                                        );
+                                    }
+                                }
+                            });
+                        }
 
                         let ring_box_h = if board_slug == "orion" { 265.0 } else { 225.0 };
                         let canvas_size = Vec2::new(ui.available_width().max(260.0), ring_box_h);
@@ -593,7 +692,7 @@ pub fn render_twin_canvas(ui: &mut egui::Ui, app: &mut GuiAppState) {
                         );
                         painter.circle_filled(doa_pos, 5.2, Color32::from_rgb(0, 229, 255));
 
-                        if st.tof_mm < 400 {
+                        if board_slug == "yandexmini" && st.tof_mm < 400 {
                             painter.circle_filled(
                                 center,
                                 outer_r * 0.52,

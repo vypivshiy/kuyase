@@ -1,192 +1,511 @@
 use crate::dumper::dump_from_adb;
 use crate::gui::state::GuiAppState;
 use crate::image_builder::{build_guest_image_from_dump, prepare_images};
-use crate::session::{resolve_kernel_image, resolve_qemu_binary};
-use eframe::egui::{self, Color32, RichText};
-use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
+use eframe::egui::{self, Color32, Margin, RichText, Stroke};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::thread;
+
+const MODAL_CARD_WIDTH: f32 = 760.0;
+const LABEL_COL_WIDTH: f32 = 155.0;
+const PATH_COL_WIDTH: f32 = 345.0;
+const PATH_ACTIONS_COL_WIDTH: f32 = 240.0;
+
+fn section_card_frame(
+    ui: &mut egui::Ui,
+    title: &str,
+    subtitle: &str,
+    add_body: impl FnOnce(&mut egui::Ui),
+) {
+    egui::Frame::none()
+        .fill(Color32::from_rgb(35, 37, 43))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(62, 68, 78)))
+        .rounding(8.0)
+        .inner_margin(Margin::symmetric(12.0, 10.0))
+        .show(ui, |ui| {
+            ui.set_min_width(MODAL_CARD_WIDTH);
+            ui.set_max_width(MODAL_CARD_WIDTH);
+            ui.label(RichText::new(title).strong().size(14.8));
+            ui.label(
+                RichText::new(subtitle)
+                    .small()
+                    .color(Color32::from_rgb(155, 165, 180)),
+            );
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(6.0);
+            add_body(ui);
+        });
+}
+
+fn render_row_label(ui: &mut egui::Ui, text: &str) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(LABEL_COL_WIDTH, 20.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(LABEL_COL_WIDTH);
+            ui.set_max_width(LABEL_COL_WIDTH);
+            ui.label(RichText::new(text).small().strong());
+        },
+    );
+}
+
+fn render_path_cell(
+    ui: &mut egui::Ui,
+    dot_color: Color32,
+    text: &str,
+    text_color: Color32,
+    hover: &str,
+) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(PATH_COL_WIDTH, 20.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(PATH_COL_WIDTH);
+            ui.set_max_width(PATH_COL_WIDTH);
+            ui.label(RichText::new("●").small().color(dot_color));
+            ui.add(
+                egui::Label::new(RichText::new(text).small().monospace().color(text_color))
+                    .truncate(),
+            )
+            .on_hover_text(hover);
+        },
+    );
+}
+
+pub fn render_image_manager_modal(ctx: &egui::Context, app: &mut GuiAppState) {
+    if !app.show_image_manager_modal {
+        return;
+    }
+
+    let mut open = app.show_image_manager_modal;
+    egui::Window::new("Образы (.ext4), ADB и настройки QEMU")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .auto_sized()
+        .default_width(MODAL_CARD_WIDTH + 24.0)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            render_launcher_pane(ui, app);
+        });
+    app.show_image_manager_modal = open;
+}
 
 pub fn render_launcher_pane(ui: &mut egui::Ui, app: &mut GuiAppState) {
     let is_busy = app.bg_task_running.load(Ordering::Relaxed);
     let bg_status = app.bg_task_status.lock().unwrap().clone();
 
-    egui::ScrollArea::vertical()
-        .id_salt("images_adb_scroll")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new(format!("Статус: {}", app.status_message))
-                        .color(Color32::from_rgb(150, 210, 255)),
-                );
-                if is_busy || bg_status != "Idle" {
-                    ui.separator();
+    if is_busy || bg_status != "Idle" {
+        egui::Frame::none()
+            .fill(Color32::from_rgb(48, 42, 22))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(220, 165, 20)))
+            .rounding(7.0)
+            .inner_margin(Margin::symmetric(12.0, 6.0))
+            .show(ui, |ui| {
+                ui.set_min_width(MODAL_CARD_WIDTH);
+                ui.set_max_width(MODAL_CARD_WIDTH);
+                ui.horizontal(|ui| {
                     if is_busy {
                         ui.spinner();
                     }
                     ui.label(
-                        RichText::new(format!("Задача: {}", bg_status))
-                            .color(Color32::from_rgb(255, 215, 100)),
+                        RichText::new(format!("Операция: {}", bg_status))
+                            .small()
+                            .strong()
+                            .color(Color32::from_rgb(255, 220, 110)),
                     );
-                }
+                });
             });
-            ui.separator();
+        ui.add_space(8.0);
+    }
 
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Папка образов (.ext4):").strong());
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut app.config.custom_images_dir)
-                            .desired_width(240.0)
-                            .hint_text("./work (по умолчанию)"),
-                    )
-                    .changed()
-                {
-                    app.refresh_images_and_dumps();
-                    let _ = app.save_config();
-                }
-                if ui.button("Выбрать папку...").clicked() {
-                    app.open_native_folder_dialog();
-                }
-                if ui.button("Обновить список").clicked() {
-                    app.refresh_images_and_dumps();
-                }
-                if ui
-                    .add_enabled(!is_busy, egui::Button::new("Собрать все из backups/"))
-                    .clicked()
-                {
-                    spawn_prepare_task(app, None, None);
-                }
-            });
+    // Карточка 1: Сборка образа колонки (.ext4)
+    section_card_frame(
+        ui,
+        "Сборка образа колонки (.ext4)",
+        "Создание загрузочного образа work/<board>-system.ext4 с физической колонки по ADB или из файла дампа",
+        |ui| {
+            let is_file_mode = app.config.build_source_mode == "file";
 
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Исходный дамп (rootfs.tar.gz / ubi / папка):").strong());
-                if !app.firmware_dumps.is_empty() {
-                    egui::ComboBox::from_id_salt("dump_selector")
-                        .selected_text(&app.config.selected_dump_path)
-                        .width(260.0)
-                        .show_ui(ui, |ui| {
-                            for (name, path) in &app.firmware_dumps {
-                                let p_str = path.display().to_string();
-                                if ui
-                                    .selectable_value(
-                                        &mut app.config.selected_dump_path,
-                                        p_str.clone(),
-                                        format!("{} ({})", name, p_str),
-                                    )
-                                    .changed()
-                                {
-                                    let _ = app.save_config();
-                                }
+            // Переключатель способа сборки
+            egui::Grid::new("image_build_mode_switch_grid")
+                .num_columns(2)
+                .spacing([10.0, 8.0])
+                .show(ui, |ui| {
+                    render_row_label(ui, "Способ сборки:");
+                    ui.horizontal(|ui| {
+                        let adb_tab_btn = egui::Button::new(
+                            RichText::new("С колонки по ADB (:5555)")
+                                .small()
+                                .strong()
+                                .color(if !is_file_mode {
+                                    Color32::WHITE
+                                } else {
+                                    Color32::from_rgb(190, 200, 215)
+                                }),
+                        )
+                        .fill(if !is_file_mode {
+                            Color32::from_rgb(53, 132, 228)
+                        } else {
+                            Color32::from_rgb(48, 52, 60)
+                        });
+                        if ui.add(adb_tab_btn).clicked() && is_file_mode {
+                            app.config.build_source_mode = "adb".to_string();
+                            let _ = app.save_config();
+                        }
+
+                        let file_tab_btn = egui::Button::new(
+                            RichText::new("Из файла дампа (.tar.gz / .zip / .ubi / .img)")
+                                .small()
+                                .strong()
+                                .color(if is_file_mode {
+                                    Color32::WHITE
+                                } else {
+                                    Color32::from_rgb(190, 200, 215)
+                                }),
+                        )
+                        .fill(if is_file_mode {
+                            Color32::from_rgb(53, 132, 228)
+                        } else {
+                            Color32::from_rgb(48, 52, 60)
+                        });
+                        if ui.add(file_tab_btn).clicked() && !is_file_mode {
+                            app.config.build_source_mode = "file".to_string();
+                            let _ = app.save_config();
+                        }
+                    });
+                    ui.end_row();
+                });
+
+            ui.add_space(6.0);
+
+            if !is_file_mode {
+                // Вариант 1: По сети ADB (:5555)
+                egui::Grid::new("image_build_adb_grid")
+                    .num_columns(2)
+                    .spacing([10.0, 8.0])
+                    .show(ui, |ui| {
+                        render_row_label(ui, "Адрес колонки (IP:5555):");
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_sized(
+                                    [215.0, 22.0],
+                                    egui::TextEdit::singleline(&mut app.config.last_adb_target)
+                                        .desired_width(215.0)
+                                        .hint_text("192.168.1.100:5555"),
+                                )
+                                .changed()
+                            {
+                                let _ = app.save_config();
+                            }
+                            let adb_build_btn = egui::Button::new(
+                                RichText::new("Снять дамп и собрать .ext4")
+                                    .strong()
+                                    .color(Color32::WHITE),
+                            )
+                            .fill(Color32::from_rgb(38, 162, 105));
+                            if ui
+                                .add_enabled(
+                                    !is_busy && !app.config.last_adb_target.trim().is_empty(),
+                                    adb_build_btn,
+                                )
+                                .on_hover_text(
+                                    "Скачать системный раздел по ADB (:5555) в backups/ и сразу собрать готовый к запуску образ work/<board>-system.ext4",
+                                )
+                                .clicked()
+                            {
+                                let target = app.config.last_adb_target.trim().to_string();
+                                spawn_adb_dump_and_build_task(app, target, true);
+                            }
+                            if ui
+                                .add_enabled(
+                                    !is_busy && !app.config.last_adb_target.trim().is_empty(),
+                                    egui::Button::new("Только скачать .tar.gz"),
+                                )
+                                .clicked()
+                            {
+                                let target = app.config.last_adb_target.trim().to_string();
+                                spawn_adb_dump_and_build_task(app, target, false);
                             }
                         });
-                }
-                ui.add(
-                    egui::TextEdit::singleline(&mut app.config.selected_dump_path)
-                        .desired_width(220.0),
-                );
-                if ui
-                    .add_enabled(
-                        !is_busy && !app.config.selected_dump_path.trim().is_empty(),
-                        egui::Button::new("Пересобрать .ext4 из дампа"),
+                        ui.end_row();
+                    });
+            } else {
+                // Вариант 2: Из файла дампа (в том же стиле, что и настройки путей)
+                let dump_trimmed = app.config.selected_dump_path.trim().to_string();
+                let dump_exists = !dump_trimmed.is_empty() && Path::new(&dump_trimmed).is_file();
+                let (dump_dot_col, dump_display, dump_text_col) = if dump_exists {
+                    (
+                        Color32::from_rgb(100, 230, 135),
+                        dump_trimmed.clone(),
+                        Color32::from_rgb(215, 222, 232),
                     )
-                    .clicked()
-                {
-                    let dump_p = PathBuf::from(app.config.selected_dump_path.trim());
-                    spawn_prepare_task(app, None, Some(dump_p));
-                }
-            });
+                } else {
+                    (
+                        Color32::from_rgb(245, 190, 90),
+                        "Не выбран (выберите .tar.gz / .zip / .ubi / .img)".to_string(),
+                        Color32::from_rgb(245, 190, 90),
+                    )
+                };
 
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Снятие дампа по ADB (:5555):").strong());
+                egui::Grid::new("image_build_file_grid")
+                    .num_columns(3)
+                    .spacing([10.0, 8.0])
+                    .show(ui, |ui| {
+                        render_row_label(ui, "Файл дампа:");
+                        render_path_cell(
+                            ui,
+                            dump_dot_col,
+                            &dump_display,
+                            dump_text_col,
+                            &dump_display,
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(PATH_ACTIONS_COL_WIDTH, 20.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.set_min_width(PATH_ACTIONS_COL_WIDTH);
+                                ui.set_max_width(PATH_ACTIONS_COL_WIDTH);
+                                if ui.small_button("Выбрать файл...").clicked() {
+                                    app.open_native_file_dialog();
+                                }
+                                let build_btn = egui::Button::new(
+                                    RichText::new("Собрать .ext4")
+                                        .small()
+                                        .strong()
+                                        .color(Color32::WHITE),
+                                )
+                                .fill(Color32::from_rgb(38, 162, 105));
+                                if ui
+                                    .add_enabled(!is_busy && dump_exists, build_btn)
+                                    .on_hover_text(
+                                        "Собрать загрузочный образ work/<board>-system.ext4 из выбранного файла дампа",
+                                    )
+                                    .clicked()
+                                {
+                                    let dump_p = PathBuf::from(&dump_trimmed);
+                                    spawn_prepare_task(app, None, Some(dump_p));
+                                }
+                            },
+                        );
+                        ui.end_row();
+                    });
+            }
+
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            ui.label(
+                RichText::new(
+                    "Примечание: автоматический санитайзер удаляет известные токены, ключи и конфиги Wi-Fi, но не гарантирует 100% очистку чувствительных данных. Если планируется публично выкладывать дамп или образ, обязательно перепроверьте его содержимое вручную.",
+                )
+                .small()
+                .color(Color32::from_rgb(235, 195, 105)),
+            );
+        },
+    );
+
+    ui.add_space(10.0);
+
+    // Карточка 2: Пути и сеть виртуальной машины
+    section_card_frame(
+        ui,
+        "Пути и сеть виртуальной машины",
+        "Текущие пути к папке образов, эмулятору QEMU и ядру Linux",
+        |ui| {
+            let images_dir_display = if app.config.custom_images_dir.trim().is_empty() {
+                format!("{} (авто)", app.root_dir.join("work").display())
+            } else {
+                app.config.custom_images_dir.trim().to_string()
+            };
+
+            let (qemu_ok, qemu_display) = match app.qemu_path.as_ref() {
+                Some(p) => {
+                    let suffix = if app.config.custom_qemu_path.trim().is_empty() {
+                        " (авто)"
+                    } else {
+                        ""
+                    };
+                    (true, format!("{}{}", p.display(), suffix))
+                }
+                None => (false, "Не найден (выберите qemu-system-aarch64)".to_string()),
+            };
+
+            let (kernel_ok, kernel_display) = match app.kernel_path.as_ref() {
+                Some(p) => {
+                    let suffix = if app.config.custom_kernel_path.trim().is_empty() {
+                        " (авто)"
+                    } else {
+                        ""
+                    };
+                    (true, format!("{}{}", p.display(), suffix))
+                }
+                None => (false, "Не найдено (выберите файл Image)".to_string()),
+            };
+
+            egui::Grid::new("vm_paths_settings_grid")
+                .num_columns(3)
+                .spacing([10.0, 8.0])
+                .show(ui, |ui| {
+                    // 1. Папка образов (.ext4)
+                    render_row_label(ui, "Папка образов (.ext4):");
+                    let img_count = app.guest_images.len();
+                    let img_col = if img_count > 0 {
+                        Color32::from_rgb(100, 230, 135)
+                    } else {
+                        Color32::from_rgb(245, 190, 90)
+                    };
+                    let img_text = format!("{} ({} обр.)", images_dir_display, img_count);
+                    render_path_cell(
+                        ui,
+                        img_col,
+                        &img_text,
+                        Color32::from_rgb(215, 222, 232),
+                        &img_text,
+                    );
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(PATH_ACTIONS_COL_WIDTH, 20.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_width(PATH_ACTIONS_COL_WIDTH);
+                            ui.set_max_width(PATH_ACTIONS_COL_WIDTH);
+                            if ui.small_button("Выбрать папку...").clicked() {
+                                app.open_native_folder_dialog();
+                            }
+                            if !app.config.custom_images_dir.trim().is_empty()
+                                && ui
+                                    .small_button("Авто")
+                                    .on_hover_text("Вернуть папку ./work по умолчанию")
+                                    .clicked()
+                            {
+                                app.config.custom_images_dir.clear();
+                                app.refresh_images_and_dumps();
+                                let _ = app.save_config();
+                            }
+                            if ui
+                                .small_button("↻")
+                                .on_hover_text("Пересканировать папку образов")
+                                .clicked()
+                            {
+                                app.refresh_images_and_dumps();
+                            }
+                        },
+                    );
+                    ui.end_row();
+
+                    // 2. Эмулятор QEMU
+                    render_row_label(ui, "Эмулятор QEMU:");
+                    let q_col = if qemu_ok {
+                        Color32::from_rgb(100, 230, 135)
+                    } else {
+                        Color32::from_rgb(255, 110, 110)
+                    };
+                    render_path_cell(
+                        ui,
+                        q_col,
+                        &qemu_display,
+                        if qemu_ok {
+                            Color32::from_rgb(215, 222, 232)
+                        } else {
+                            q_col
+                        },
+                        &qemu_display,
+                    );
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(PATH_ACTIONS_COL_WIDTH, 20.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_width(PATH_ACTIONS_COL_WIDTH);
+                            ui.set_max_width(PATH_ACTIONS_COL_WIDTH);
+                            if ui.small_button("Выбрать файл...").clicked() {
+                                app.open_qemu_file_dialog();
+                            }
+                            if !app.config.custom_qemu_path.trim().is_empty()
+                                && ui
+                                    .small_button("Авто")
+                                    .on_hover_text("Вернуть автопоиск QEMU")
+                                    .clicked()
+                            {
+                                app.config.custom_qemu_path.clear();
+                                app.refresh_dependencies();
+                                let _ = app.save_config();
+                            }
+                        },
+                    );
+                    ui.end_row();
+
+                    // 3. Ядро Linux (Image)
+                    render_row_label(ui, "Ядро Linux (Image):");
+                    let k_col = if kernel_ok {
+                        Color32::from_rgb(100, 230, 135)
+                    } else {
+                        Color32::from_rgb(255, 110, 110)
+                    };
+                    render_path_cell(
+                        ui,
+                        k_col,
+                        &kernel_display,
+                        if kernel_ok {
+                            Color32::from_rgb(215, 222, 232)
+                        } else {
+                            k_col
+                        },
+                        &kernel_display,
+                    );
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(PATH_ACTIONS_COL_WIDTH, 20.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_width(PATH_ACTIONS_COL_WIDTH);
+                            ui.set_max_width(PATH_ACTIONS_COL_WIDTH);
+                            if ui.small_button("Выбрать файл...").clicked() {
+                                app.open_kernel_file_dialog();
+                            }
+                            if !app.config.custom_kernel_path.trim().is_empty()
+                                && ui
+                                    .small_button("Авто")
+                                    .on_hover_text("Вернуть автопоиск ядра Image")
+                                    .clicked()
+                            {
+                                app.config.custom_kernel_path.clear();
+                                app.refresh_dependencies();
+                                let _ = app.save_config();
+                            }
+                        },
+                    );
+                    ui.end_row();
+                });
+
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Порт моста (:8091 -> ПК):").small());
                 if ui
                     .add(
-                        egui::TextEdit::singleline(&mut app.config.last_adb_target)
-                            .desired_width(160.0),
+                        egui::DragValue::new(&mut app.config.bridge_port)
+                            .range(1024..=65535),
                     )
                     .changed()
                 {
                     let _ = app.save_config();
                 }
-                if ui
-                    .add_enabled(
-                        !is_busy && !app.config.last_adb_target.trim().is_empty(),
-                        egui::Button::new("Скачать чистый rootfs.tar.gz по ADB"),
-                    )
-                    .clicked()
-                {
-                    let target = app.config.last_adb_target.trim().to_string();
-                    spawn_adb_dump_task(app, target);
-                }
-
                 ui.separator();
-                ui.label("Порт моста:");
+                ui.label(RichText::new("Порт гостевого ADB (:5555 -> ПК):").small());
                 if ui
-                    .add(egui::DragValue::new(&mut app.config.bridge_port).range(1024..=65535))
-                    .changed()
-                {
-                    let _ = app.save_config();
-                }
-                ui.label("Порт ADB:");
-                if ui
-                    .add(egui::DragValue::new(&mut app.config.adb_port).range(1024..=65535))
+                    .add(
+                        egui::DragValue::new(&mut app.config.adb_port).range(1024..=65535),
+                    )
                     .changed()
                 {
                     let _ = app.save_config();
                 }
             });
-
-            ui.horizontal_wrapped(|ui| {
-                let qemu_ok = app.qemu_path.is_some();
-                let kernel_ok = app.kernel_path.is_some();
-                ui.label(
-                    RichText::new(format!(
-                        "QEMU: {}",
-                        app.qemu_path
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "НЕ НАЙДЕН".to_string())
-                    ))
-                    .small()
-                    .color(if qemu_ok {
-                        Color32::from_rgb(110, 230, 130)
-                    } else {
-                        Color32::from_rgb(255, 110, 110)
-                    }),
-                );
-                ui.separator();
-                ui.label(
-                    RichText::new(format!(
-                        "Ядро Image: {}",
-                        app.kernel_path
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "НЕ НАЙДЕНО".to_string())
-                    ))
-                    .small()
-                    .color(if kernel_ok {
-                        Color32::from_rgb(110, 230, 130)
-                    } else {
-                        Color32::from_rgb(255, 110, 110)
-                    }),
-                );
-                if ui.small_button("Проверить QEMU и ядро").clicked() {
-                    app.refresh_dependencies();
-                }
-                if ui
-                    .add_enabled(
-                        !is_busy,
-                        egui::Button::new("Подготовить ./bin и ./kernel"),
-                    )
-                    .clicked()
-                {
-                    spawn_dependency_download_task(app);
-                }
-            });
-        });
+        },
+    );
 }
 
 fn spawn_prepare_task(app: &mut GuiAppState, board: Option<String>, dump: Option<PathBuf>) {
@@ -218,7 +537,7 @@ fn spawn_prepare_task(app: &mut GuiAppState, board: Option<String>, dump: Option
     });
 }
 
-fn spawn_adb_dump_task(app: &mut GuiAppState, target: String) {
+fn spawn_adb_dump_and_build_task(app: &mut GuiAppState, target: String, build_ext4: bool) {
     if app.bg_task_running.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -230,87 +549,41 @@ fn spawn_adb_dump_task(app: &mut GuiAppState, target: String) {
     thread::spawn(move || {
         match dump_from_adb(&root, &target, None) {
             Ok(res) => {
-                *status.lock().unwrap() = format!(
-                    "Дамп сохранён: {} ({} байт)",
-                    res.out_dir.display(),
-                    res.archive_bytes
-                );
+                if build_ext4 {
+                    *status.lock().unwrap() = format!(
+                        "Дамп {} снят ({} байт). Сборка образа .ext4...",
+                        res.board_slug, res.archive_bytes
+                    );
+                    match build_guest_image_from_dump(
+                        &root,
+                        Some(&res.board_slug),
+                        &res.archive_path,
+                        None,
+                    ) {
+                        Ok((board, out)) => {
+                            *status.lock().unwrap() = format!(
+                                "Готов образ {} из ADB: {}",
+                                board,
+                                out.display()
+                            );
+                        }
+                        Err(e) => {
+                            *status.lock().unwrap() =
+                                format!("Дамп снят, но ошибка сборки .ext4: {}", e);
+                        }
+                    }
+                } else {
+                    *status.lock().unwrap() = format!(
+                        "Дамп сохранён: {} ({} байт)",
+                        res.out_dir.display(),
+                        res.archive_bytes
+                    );
+                }
             }
             Err(e) => {
                 *status.lock().unwrap() = format!("Ошибка снятия дампа ADB: {}", e);
             }
         }
-        flag.store(false, Ordering::SeqCst);
-    });
-}
-
-pub fn provision_dependencies_into_workspace(root: &std::path::Path) -> (bool, bool) {
-    let bin_dir = root.join("bin");
-    let kernel_dir = root.join("kernel");
-    let _ = fs::create_dir_all(&bin_dir);
-    let _ = fs::create_dir_all(&kernel_dir);
-
-    let qemu_bin_name = if cfg!(windows) {
-        "qemu-system-aarch64.exe"
-    } else {
-        "qemu-system-aarch64"
-    };
-    let target_qemu = bin_dir.join(qemu_bin_name);
-    if !target_qemu.is_file() {
-        if let Ok(found_q) = resolve_qemu_binary(root) {
-            if found_q != target_qemu {
-                let _ = fs::copy(&found_q, &target_qemu);
-            }
-        } else {
-            let default_url = if cfg!(windows) {
-                "https://github.com/kuyase/kuyase/releases/latest/download/qemu-system-aarch64.exe"
-            } else {
-                "https://github.com/kuyase/kuyase/releases/latest/download/qemu-system-aarch64"
-            };
-            let url = std::env::var("KUYASE_QEMU_URL").unwrap_or_else(|_| default_url.to_string());
-            let _ = Command::new("curl")
-                .args(["-fL", &url, "-o", &target_qemu.display().to_string()])
-                .status();
-        }
-    }
-
-    let target_kernel = kernel_dir.join("Image");
-    if !target_kernel.is_file() {
-        if let Ok(found_k) = resolve_kernel_image(root) {
-            if found_k != target_kernel {
-                let _ = fs::copy(&found_k, &target_kernel);
-            }
-        } else {
-            let url = std::env::var("KUYASE_KERNEL_URL").unwrap_or_else(|_| {
-                "https://github.com/kuyase/kuyase/releases/latest/download/Image".to_string()
-            });
-            let _ = Command::new("curl")
-                .args(["-fL", &url, "-o", &target_kernel.display().to_string()])
-                .status();
-        }
-    }
-
-    let q_ok = resolve_qemu_binary(root).is_ok();
-    let k_ok = resolve_kernel_image(root).is_ok();
-    (q_ok, k_ok)
-}
-
-fn spawn_dependency_download_task(app: &mut GuiAppState) {
-    if app.bg_task_running.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let root = app.root_dir.clone();
-    let flag = app.bg_task_running.clone();
-    let status = app.bg_task_status.clone();
-    *status.lock().unwrap() = "Проверка и подготовка ./bin и ./kernel...".to_string();
-
-    thread::spawn(move || {
-        let (q_ok, k_ok) = provision_dependencies_into_workspace(&root);
-        *status.lock().unwrap() = format!(
-            "Проверка завершена (QEMU={}, Kernel={})",
-            if q_ok { "OK" } else { "MISSING" },
-            if k_ok { "OK" } else { "MISSING" }
-        );
         flag.store(false, Ordering::SeqCst);
     });
 }

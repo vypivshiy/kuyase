@@ -360,14 +360,35 @@ fn render_tts_audio_voice_card(ui: &mut egui::Ui, app: &mut GuiAppState) {
 }
 
 fn render_tof_and_sensors_card(ui: &mut egui::Ui, app: &mut GuiAppState) {
-    gnome_preferences_group(
-        ui,
-        "2. Датчик приближения ToF (VL53L0X на yandexmini) и Сенсоры",
-        "Сигналы оптического дальномера ToF, взмах ладони над крышкой, направленные свайпы и датчики среды",
-        |ui| {
+    let board_slug = app
+        .latest_state
+        .as_ref()
+        .map(|s| s.board_slug.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| app.config.selected_board.clone());
+
+    let (card_title, card_subtitle) = if board_slug == "yandexmini" {
+        (
+            "2. Лазерный дальномер ToF (VL53L0X) и датчики среды",
+            "Оптический датчик жестов руки VL53L0X (устанавливался только в Станцию Мини 1), освещённость ALS и температура SoC",
+        )
+    } else if board_slug == "orion" {
+        (
+            "2. Ультразвуковой тракт (38.4 кГц), освещённость ALS и датчики",
+            "Дистанция акустического отражения для pcm.ultrasound (96 кГц / 38.4 кГц), датчик света light-sensor-top и температура SoC",
+        )
+    } else {
+        (
+            "2. Датчики среды (ALS, температура SoC) и световое кольцо",
+            "Датчик внешней освещённости ltr308als01 (IIO), температура SoC и управление кольцом LED (оптического датчика VL53L0X на этой модели нет)",
+        )
+    };
+
+    gnome_preferences_group(ui, card_title, card_subtitle, |ui| {
+        if board_slug == "yandexmini" {
             gnome_action_row(
                 ui,
-                "Импульс датчика ToF (VL53L0X)",
+                "Импульс датчика ToF (STM VL53L0X)",
                 "Кратковременное приближение ладони (140 мм на 0.9 с с возвратом к прежней дистанции)",
                 false,
                 |ui| {
@@ -413,8 +434,8 @@ fn render_tof_and_sensors_card(ui: &mut egui::Ui, app: &mut GuiAppState) {
 
             gnome_action_row(
                 ui,
-                "Точная дистанция ToF и Свайпы",
-                "Ручная установка расстояния (40..8190 мм) и направления емкостного свайпа",
+                "Точная дистанция ToF (VL53L0X)",
+                "Ручная установка расстояния от ладони до крышки (40..8190 мм) для регулировки громкости жестом",
                 false,
                 |ui| {
                     if ui
@@ -433,99 +454,133 @@ fn render_tof_and_sensors_card(ui: &mut egui::Ui, app: &mut GuiAppState) {
                             swipe_direction: None,
                         });
                     }
-                    ui.separator();
-                    for (lbl, dir) in [
-                        ("Влево", "left"),
-                        ("Вправо", "right"),
-                        ("Вверх", "up"),
-                        ("Вниз", "down"),
-                    ] {
-                        if ui.button(lbl).clicked() {
-                            app.send_command(HostCommand::SetSensor {
-                                doa_angle: None,
-                                mic_rms: None,
-                                als_lux: None,
-                                temp_c: None,
-                                tof_mm: None,
-                                swipe: Some(true),
-                                swipe_direction: Some(dir.to_string()),
-                            });
-                        }
-                    }
                 },
             );
-
+        } else if board_slug == "orion" {
             gnome_action_row(
                 ui,
-                "Громкость, Датчики среды и Паттерн LED",
-                "Громкость (0..10), Освещённость ALS (лк), Температура (C) и принудительный .led паттерн",
-                true,
+                "Акустическое отражение ультразвука (pcm.ultrasound, 38.4 кГц)",
+                "Дистанция до препятствия (40..8190 мм), определяющая амплитуду отражённого эха на усилителе ACM8625S (2-002c)",
+                false,
                 |ui| {
                     if ui
-                        .add(egui::Slider::new(&mut app.volume_slider, 0..=10).text("Громк"))
+                        .add(egui::Slider::new(&mut app.tof_slider, 40..=8190).suffix(" мм"))
                         .changed()
                     {
-                        app.send_command(HostCommand::SetVolume {
-                            volume_level: app.volume_slider,
-                        });
-                    }
-                    if ui
-                        .add(egui::Slider::new(&mut app.als_slider, 0..=10000).text("лк"))
-                        .changed()
-                    {
-                        app.send_command(HostCommand::SetSensor {
-                            doa_angle: None,
-                            mic_rms: None,
-                            als_lux: Some(app.als_slider),
-                            temp_c: None,
-                            tof_mm: None,
-                            swipe: None,
-                            swipe_direction: None,
-                        });
-                    }
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut app.temp_slider, 20.0..=85.0)
-                                .text("C")
-                                .fixed_decimals(1),
-                        )
-                        .changed()
-                    {
+                        app.tof_wave_reset_at = None;
+                        app.tof_restore_distance = app.tof_slider;
                         app.send_command(HostCommand::SetSensor {
                             doa_angle: None,
                             mic_rms: None,
                             als_lux: None,
-                            temp_c: Some(app.temp_slider),
-                            tof_mm: None,
+                            temp_c: None,
+                            tof_mm: Some(app.tof_slider),
                             swipe: None,
                             swipe_direction: None,
                         });
                     }
-
-                    egui::ComboBox::from_id_salt("gnome_led_pattern_combo")
-                        .selected_text(if app.selected_led_pattern.is_empty() {
-                            "LED: Авто (Quasar)"
-                        } else {
-                            &app.selected_led_pattern
-                        })
-                        .width(185.0)
-                        .show_ui(ui, |ui| {
-                            for &(val, label) in LED_PATTERNS {
-                                if ui
-                                    .selectable_label(app.selected_led_pattern == val, label)
-                                    .clicked()
-                                {
-                                    app.selected_led_pattern = val.to_string();
-                                    app.send_command(HostCommand::SetLedPattern {
-                                        pattern: app.selected_led_pattern.clone(),
-                                    });
-                                }
-                            }
+                    if ui.button("Ближнее эхо (180 мм)").clicked() {
+                        app.tof_wave_reset_at = None;
+                        app.tof_slider = 180;
+                        app.tof_restore_distance = 180;
+                        app.send_command(HostCommand::SetSensor {
+                            doa_angle: None,
+                            mic_rms: None,
+                            als_lux: None,
+                            temp_c: None,
+                            tof_mm: Some(180),
+                            swipe: None,
+                            swipe_direction: None,
                         });
+                    }
+                    if ui.button("Свободное поле (8190 мм)").clicked() {
+                        app.tof_wave_reset_at = None;
+                        app.tof_slider = 8190;
+                        app.tof_restore_distance = 8190;
+                        app.send_command(HostCommand::SetSensor {
+                            doa_angle: None,
+                            mic_rms: None,
+                            als_lux: None,
+                            temp_c: None,
+                            tof_mm: Some(8190),
+                            swipe: None,
+                            swipe_direction: None,
+                        });
+                    }
                 },
             );
-        },
-    );
+        }
+
+        gnome_action_row(
+            ui,
+            "Громкость, датчики среды и паттерн LED",
+            "Громкость (0..10), освещённость ALS (лк), температура SoC (C) и принудительный .led паттерн",
+            true,
+            |ui| {
+                if ui
+                    .add(egui::Slider::new(&mut app.volume_slider, 0..=10).text("Громк"))
+                    .changed()
+                {
+                    app.send_command(HostCommand::SetVolume {
+                        volume_level: app.volume_slider,
+                    });
+                }
+                if ui
+                    .add(egui::Slider::new(&mut app.als_slider, 0..=10000).text("лк"))
+                    .changed()
+                {
+                    app.send_command(HostCommand::SetSensor {
+                        doa_angle: None,
+                        mic_rms: None,
+                        als_lux: Some(app.als_slider),
+                        temp_c: None,
+                        tof_mm: None,
+                        swipe: None,
+                        swipe_direction: None,
+                    });
+                }
+                if ui
+                    .add(
+                        egui::Slider::new(&mut app.temp_slider, 20.0..=85.0)
+                            .text("C")
+                            .fixed_decimals(1),
+                    )
+                    .changed()
+                {
+                    app.send_command(HostCommand::SetSensor {
+                        doa_angle: None,
+                        mic_rms: None,
+                        als_lux: None,
+                        temp_c: Some(app.temp_slider),
+                        tof_mm: None,
+                        swipe: None,
+                        swipe_direction: None,
+                    });
+                }
+
+                egui::ComboBox::from_id_salt("gnome_led_pattern_combo")
+                    .selected_text(if app.selected_led_pattern.is_empty() {
+                        "LED: Авто (Quasar)"
+                    } else {
+                        &app.selected_led_pattern
+                    })
+                    .width(185.0)
+                    .show_ui(ui, |ui| {
+                        for &(val, label) in LED_PATTERNS {
+                            if ui
+                                .selectable_label(app.selected_led_pattern == val, label)
+                                .clicked()
+                            {
+                                app.selected_led_pattern = val.to_string();
+                                app.send_command(HostCommand::SetLedPattern {
+                                    pattern: app.selected_led_pattern.clone(),
+                                });
+                            }
+                        }
+                    });
+            },
+        );
+    });
 }
 
 fn render_board_specific_card(ui: &mut egui::Ui, app: &mut GuiAppState) {
@@ -664,9 +719,9 @@ fn render_board_specific_card(ui: &mut egui::Ui, app: &mut GuiAppState) {
                     .unwrap_or_else(|| ("ledfb-ring (Quasar Native)".to_string(), 0));
                 gnome_action_row(
                     ui,
-                    "Драйвер sysfs / ledfb-ring",
+                    "Драйвер светового кольца (sysfs / ledfb-ring)",
                     &format!(
-                        "Активный триггер: {} | Конфликтов прямой записи sysfs: {}",
+                        "Активный триггер: {} | Отклонено записей sysfs при [ledfb-ring] (Trigger Conflict): {}",
                         trig, conflicts
                     ),
                     true,
@@ -682,6 +737,26 @@ fn render_board_specific_card(ui: &mut egui::Ui, app: &mut GuiAppState) {
                             app.send_command(HostCommand::SetLedPattern {
                                 pattern: String::new(),
                             });
+                        }
+                        if app.session.is_some() {
+                            if ui
+                                .button("Ручной sysfs (trigger=none)")
+                                .on_hover_text("Переключить триггер кольца в 'none' для прямой записи в /sys/class/leds/*:ring*/brightness без конфликта")
+                                .clicked()
+                            {
+                                app.send_serial_command(
+                                    "for d in /sys/class/leds/*:ring*; do echo none > \"$d/trigger\"; done",
+                                );
+                            }
+                            if ui
+                                .button("Вернуть триггер ledfb-ring")
+                                .on_hover_text("Обнулить brightness в sysfs и вернуть управление кольцом штатному триггеру драйвера ledfb-ring")
+                                .clicked()
+                            {
+                                app.send_serial_command(
+                                    "for d in /sys/class/leds/*:ring*; do echo 0 > \"$d/brightness\"; echo ledfb-ring > \"$d/trigger\"; done",
+                                );
+                            }
                         }
                     },
                 );
@@ -730,14 +805,6 @@ fn render_mini_oscilloscope(ui: &mut egui::Ui, app: &GuiAppState) {
             Stroke::new(1.2, Color32::from_rgb(55, 110, 100)),
         );
     }
-}
-
-pub fn render_audio_dock(ui: &mut egui::Ui, app: &mut GuiAppState) {
-    render_gnome_action_cards(ui, app);
-}
-
-pub fn render_voice_ipc_dock(ui: &mut egui::Ui, app: &mut GuiAppState) {
-    render_gnome_action_cards(ui, app);
 }
 
 #[cfg(test)]

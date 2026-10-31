@@ -20,12 +20,12 @@ pub const BOARD_LABELS: &[(&str, &str)] = &[
     ("plum", "plum — Станция Лайт 2 с часами (3 LED + Часы)"),
     ("plumnc", "plumnc — Станция Лайт 2 без часов (3 LED)"),
     ("station2", "station2 — Яндекс Станция 2 (88 LED световая панель)"),
-    ("yandexmini", "yandexmini — Станция Мини 1 (4 LED SN3236 BGR + ToF)"),
+    ("yandexmini", "yandexmini — Станция Мини 1 (6 LED SN3236 BGR + ToF)"),
     ("yandexmicro", "yandexmicro — Станция Лайт 1 (3 LED sysfs)"),
     ("bergamot", "bergamot — Станция Мини 3 (6 LED + Часы)"),
     ("pickle", "pickle — Станция Мини 3 Про (16 LED + Часы + 6 LED Лого)"),
     ("mango", "mango — Станция Стрит (4 LED + 3 LED Лого)"),
-    ("saturn", "saturn — Яндекс Хаб (4 LED)"),
+    ("saturn", "saturn — Яндекс Хаб (1 LED)"),
 ];
 
 pub fn board_display_label(slug: &str) -> String {
@@ -58,12 +58,26 @@ impl KuyaseGuiApp {
             ui.separator();
 
             let combo_w = (ui.available_width() * 0.26).clamp(190.0, 340.0);
-            let selected_text = board_display_label(&self.state.config.selected_board);
+            let selected_text = if self.state.guest_images.is_empty() {
+                "Нет готовых образов .ext4".to_string()
+            } else {
+                board_display_label(&self.state.config.selected_board)
+            };
             egui::ComboBox::from_id_salt("header_board_selector")
                 .selected_text(selected_text)
                 .width(combo_w)
                 .show_ui(ui, |ui| {
-                    if !self.state.guest_images.is_empty() {
+                    if self.state.guest_images.is_empty() {
+                        ui.label(
+                            RichText::new("Готовые образы (.ext4) не найдены в ./work")
+                                .small()
+                                .color(Color32::from_rgb(245, 190, 110)),
+                        );
+                        if ui.button("Открыть «Образы и QEMU...»").clicked() {
+                            self.state.show_image_manager_modal = true;
+                            ui.close_menu();
+                        }
+                    } else {
                         ui.label(
                             RichText::new("Найденные образы (.ext4):")
                                 .small()
@@ -90,24 +104,6 @@ impl KuyaseGuiApp {
                             {
                                 let _ = self.state.save_config();
                             }
-                        }
-                        ui.separator();
-                    }
-                    ui.label(
-                        RichText::new("Все поддерживаемые профили плат:")
-                            .small()
-                            .color(Color32::from_rgb(165, 175, 190)),
-                    );
-                    for &(slug, label) in BOARD_LABELS {
-                        if ui
-                            .selectable_value(
-                                &mut self.state.config.selected_board,
-                                slug.to_string(),
-                                label,
-                            )
-                            .changed()
-                        {
-                            let _ = self.state.save_config();
                         }
                     }
                 });
@@ -149,11 +145,21 @@ impl KuyaseGuiApp {
                 }
             }
 
-            if ui.button("Открыть файл...").clicked() {
-                self.state.open_native_file_dialog();
-            }
-            if ui.button("Папка образов...").clicked() {
-                self.state.open_native_folder_dialog();
+            let modal_btn = egui::Button::new(
+                RichText::new("Образы и QEMU...")
+                    .strong()
+                    .color(if self.state.show_image_manager_modal {
+                        Color32::from_rgb(130, 195, 255)
+                    } else {
+                        Color32::from_rgb(225, 232, 240)
+                    }),
+            );
+            if ui
+                .add(modal_btn)
+                .on_hover_text("Открыть окно создания образов .ext4 (по ADB или из дампа), выбора папки образов и настроек QEMU")
+                .clicked()
+            {
+                self.state.show_image_manager_modal = !self.state.show_image_manager_modal;
             }
 
             let bridge_online = self
@@ -195,45 +201,88 @@ impl KuyaseGuiApp {
 
             ui.separator();
 
+            let mut mode_changed = false;
             egui::ComboBox::from_id_salt("header_mode_selector")
                 .selected_text(if self.state.config.mode == "full" {
                     "Режим: Full"
                 } else {
                     "Режим: Stub"
                 })
-                .width(115.0)
+                .width(120.0)
                 .show_ui(ui, |ui| {
+                    ui.label(
+                        RichText::new(if vm_running {
+                            "Смена режима автоматически перезапустит запущенную ВМ:"
+                        } else {
+                            "Режим запуска гостевого стека (при старте ВМ):"
+                        })
+                        .small()
+                        .color(Color32::from_rgb(245, 200, 110)),
+                    );
+                    ui.separator();
                     if ui
                         .selectable_value(
                             &mut self.state.config.mode,
                             "stub".to_string(),
-                            "Stub (автономный мост)",
+                            "Stub — автономный мок-сервер IPC (по умолчанию)",
+                        )
+                        .on_hover_text(
+                            "Оригинальный maind отключён. Гостевой демон qemu-hw-bridge сам поднимает локальные сокеты Quasar IPC (:9875/:9850/:9903), эмулирует периферию, синтезатор речи и окно перехвата (1680 мс) без облака Яндекса.",
                         )
                         .changed()
                     {
-                        let _ = self.state.save_config();
+                        mode_changed = true;
                     }
                     if ui
                         .selectable_value(
                             &mut self.state.config.mode,
                             "full".to_string(),
-                            "Full (демоны прошивки)",
+                            "Full — штатный maind из прошивки (экспериментальный)",
+                        )
+                        .on_hover_text(
+                            "Запускается штатный /system/vendor/quasar/onboot.sh и оригинальный maind (мост уступает ему порты :9850/:9875/:9903).\nПрактически не тестировался: на очищенных образах без ключей и токенов авторизации Яндекса полноценно работать, скорее всего, не будет.",
                         )
                         .changed()
                     {
-                        let _ = self.state.save_config();
+                        mode_changed = true;
                     }
-                });
+                })
+                .response
+                .on_hover_text(
+                    "Режим работы гостевого стека прошивки:\n\
+                    • Stub (по умолчанию): оригинальный maind отключён; демон qemu-hw-bridge сам поднимает сокеты Quasar IPC (:9875/:9850/:9903), синтезатор речи и окно перехвата (1680 мс) без привязки к облаку Яндекса.\n\
+                    • Full (экспериментальный): запускается штатный /system/vendor/quasar/onboot.sh и оригинальный maind (на очищенных образах без токенов авторизации Яндекса полноценно работать, скорее всего, не будет).\n\n\
+                    При переключении режима во время работы ВМ виртуальная машина перезапускается автоматически.",
+                );
+
+            if mode_changed {
+                let _ = self.state.save_config();
+                if vm_running {
+                    self.state.restart_vm();
+                }
+            }
 
             if ui
                 .checkbox(&mut self.state.config.clean_boot_snapshot, "Snapshot")
+                .on_hover_text(
+                    "Режим чистого запуска QEMU (-snapshot):\n\
+                    • Включён (по умолчанию): все изменения на диске внутри гостевой ОС хранятся во временном оверлее в ОЗУ и сбрасываются при остановке ВМ, а исходный файл work/<board>-system.ext4 не изменяется.\n\
+                    • Выключен: изменения записываются напрямую в файл образа .ext4 и сохраняются между запусками (применяется при следующем старте ВМ).",
+                )
                 .changed()
             {
                 let _ = self.state.save_config();
             }
 
             let mut sound_on = !self.state.config.audio_muted;
-            if ui.checkbox(&mut sound_on, "Звук на ПК").changed() {
+            if ui
+                .checkbox(&mut sound_on, "Звук на ПК")
+                .on_hover_text(
+                    "Вывод звука колонки на динамики ПК в реальном времени:\n\
+                    Транслирует PCM-аудиопоток (48 кГц, 16-бит, стерео), захватываемый с виртуальной звуковой карты snd-aloop внутри гостевой ОС (синтезатор речи, тестовый тон 440 Гц и звуки приложений).",
+                )
+                .changed()
+            {
                 self.state.config.audio_muted = !sound_on;
                 self.state
                     .audio_player
@@ -268,13 +317,10 @@ impl eframe::App for KuyaseGuiApp {
             });
 
         let collapsed = self.state.config.dock_collapsed;
-        let large = self.state.config.dock_large;
         let dock_id = if collapsed {
             "gnome_bottom_dock_collapsed"
-        } else if large {
-            "gnome_bottom_dock_large"
         } else {
-            "gnome_bottom_dock_normal"
+            "gnome_bottom_dock_expanded"
         };
 
         let mut dock_panel = egui::TopBottomPanel::bottom(dock_id).frame(
@@ -287,17 +333,9 @@ impl eframe::App for KuyaseGuiApp {
             dock_panel = dock_panel.resizable(false).exact_height(42.0);
         } else {
             let avail_win_h = ctx.screen_rect().height();
-            let max_h = (avail_win_h - 240.0).clamp(180.0, 680.0);
-            let min_h = if large {
-                360.0_f32.min(max_h)
-            } else {
-                150.0_f32.min(max_h)
-            };
-            let def_h = if large {
-                420.0_f32.min(max_h)
-            } else {
-                250.0_f32.min(max_h)
-            };
+            let max_h = (avail_win_h - 180.0).clamp(180.0, 720.0);
+            let min_h = 120.0_f32.min(max_h);
+            let def_h = 260.0_f32.min(max_h);
             dock_panel = dock_panel
                 .resizable(true)
                 .default_height(def_h)
@@ -334,6 +372,8 @@ impl eframe::App for KuyaseGuiApp {
             .show(ctx, |ui| {
                 docks::render_gnome_action_cards(ui, &mut self.state);
             });
+
+        launcher::render_image_manager_modal(ctx, &mut self.state);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
