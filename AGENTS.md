@@ -4,8 +4,9 @@
 
 - [`CONTEXT.md`](./CONTEXT.md): Канонический глоссарий доменных терминов (`Board Profile`, `Guest Image`, `Hardware Bridge`, `Virtual Speaker Twin`, `Register Latch`, `Trigger Conflict`, `Hijack Window`). Сверяйся при именовании переменных, полей JSON, флагов CLI и написании документации.
 - [`protocol/src/lib.rs`](./protocol/src/lib.rs): Контракты дуплексного TCP-протокола `qemu-hw-bridge` (`:8091` в госте / `:18091` на хосте) с фреймингом `[u8 kind][u32_le len][payload]`, структура телеметрии `BridgeStateSnapshot`, перечисления `HostCommand` и `GuestPacket` (`StateSnapshot`, `PcmAudioChunk`, `CommandAck`). Читай при изменении `hw-bridge/src/bridge_server.rs`, `kuyase/src/bridge_client.rs`, `kuyase/src/gui/` или интеграционных тестов `kuyase/src/test_suite.rs`.
-- [`DUMP_GUIDE.md`](./DUMP_GUIDE.md): Снятие `rootfs.tar.gz` по сетевому ADB (`:5555`). Читай при изменении `kuyase/src/adb.rs`, `kuyase/src/dumper.rs` или разборе форматов дампов в `kuyase/src/image_builder.rs`.
-- [`README.md`](./README.md): Матрица эмулируемой периферии, таблицы протестированных и автопрофилируемых плат и команды сборки и запуска нативного десктопного приложения и CLI.
+- [`DUMP_GUIDE.md`](./DUMP_GUIDE.md): Снятие `rootfs.tar.gz` по сетевому ADB (`:5555`) автономными скриптами (`scripts/dump-from-adb.sh` / `.ps1`), вручную через `adb` или встроенным клиентом `kuyase dump`. Читай при изменении `kuyase/src/adb.rs`, `kuyase/src/dumper.rs`, `kuyase/src/archive_formats.rs` или `kuyase/src/image_builder.rs`.
+- [`README.md`](./README.md): Быстрый старт, команды сборки и запуска нативного десктопного приложения и CLI (`run --headless`, `test`, `dump`, `prepare`), таблицы проверенных и непротестированных плат, матрица эмулируемой периферии и работа мок-сервера IPC Quasar.
+- [`examples/README.md`](./examples/README.md): Демо-скрипт с автотестом пакетного менеджера [`yam`](https://github.com/nyakokitsu/yam) по всей линейке плат (`test_yam_lineup.py`).
 
 ## Пайплайн сборки, подготовки образов и верификации (критично)
 
@@ -18,7 +19,7 @@
    cargo build --release -p qemu-hw-bridge --target armv7-unknown-linux-musleabihf
    cp -f target/armv7-unknown-linux-musleabihf/release/qemu-hw-bridge guest-init/bin/qemu-hw-bridge
    ```
-   Бинарник всегда собирается статически под 32-битный таргет `armv7-unknown-linux-musleabihf` (линкер `rust-lld` задан в `.cargo/config.toml` и `hw-bridge/.cargo/config.toml`), чтобы один исполняемый файл работал и на 32-битных (`yandexmini`, `yandexmini2`, `yandexmicro`), и на 64-битных (`cucumber`, `orion`) образах через ядерный `CONFIG_COMPAT=y`.
+   Бинарник всегда собирается статически под 32-битный таргет `armv7-unknown-linux-musleabihf` (линкер `rust-lld` задан в `.cargo/config.toml` и `hw-bridge/.cargo/config.toml`), чтобы один исполняемый файл работал и на 32-битных (`yandexmini`, `yandexmini2`, `yandexmini2nc`, `yandexmicro`, `plum`, `plumnc`, `station2`), и на 64-битных (`cucumber`, `orion`) образах через опцию ядра Linux `CONFIG_COMPAT=y`.
 2. **Снятие дампа по сетевому ADB и сборка гостевого образа в userspace**:
    ```bash
    # Снятие чистого rootfs.tar.gz с физической колонки по TCP :5555 встроенным Rust ADB-клиентом:
@@ -43,7 +44,7 @@
 
 ## Инварианты архитектуры и эмуляции
 
-- **Единый канал доступа в гостевую ОС**: В гостевых образах используется только штатный демон `adbd` на TCP `:5555` (проброшен на хост как `127.0.0.1:15555`) и интерактивная консоль ядра `ttyAMA0`. Не добавляй сторонние SSH-серверы (`dropbear`), ключи или бэкдоры в `guest-init/` и `kuyase/src/image_builder.rs`.
+- **Единый канал доступа в гостевую ОС**: В гостевых образах используется штатный демон `adbd` на TCP `:5555` (проброшен на хост как `127.0.0.1:15555`) и интерактивная консоль ядра `ttyAMA0`. При очистке дампа (`sanitize_tree`) пользовательские init-патчи постоянного доступа и ключи SSH (`dropbear`) убираются, чтобы не конфликтовать с инициализацией в QEMU и не оставлять ключей владельца.
 - **Чистота образов и дампов**: В `work/*.ext4`, `backups/` и коммитах не должно быть содержимого разделов `/data`, `/bkupgrade`, `/nv`, `/env`, `/tee`, учётных данных Wi-Fi (`wpa_supplicant.conf`) и серийных номеров/ключей устройств.
 - **Контроллер `SN3236` (`yandexmini`, I2C `0x3c`, `hw-bridge/src/leds.rs`, `hw-bridge/src/devices.rs`)**:
   - Порядок каналов в регистрах `0x01..0x12` и `0x26..0x37` — строго **BGR** (`B = base+0`, `G = base+1`, `R = base+2`).

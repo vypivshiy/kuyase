@@ -1,13 +1,14 @@
 # KUYASE (К.У.Я.С.Э.) — Кустарный Универсальный Яндекс Станции Эмулятор
 
-> Native cross-platform desktop application (`eframe`/`egui` + `egui_tiles`) and CLI hardware-in-the-loop QEMU (`qemu-system-aarch64`) emulator for Yandex Station smart speakers running Linux Buildroot firmware (Amlogic SoCs). Provides kernel/userspace peripheral emulation (`SN3236` I2C LEDs, `vfb` framebuffers, `sysfs` LEDs/clocks, `uinput` buttons/ToF, `IIO`/`thermal` sensors, `snd-aloop` ALSA audio), local Quasar Protobuf IPC stubs (`aliced` `:9875`, `yio_audio` `:9850`, `iohub_services` `:9903`), ADB root access (`:15555`), a userspace `.ext4` image builder, a built-in Rust ADB client (`:5555`), and the 60 FPS `Virtual Speaker Twin` desktop workspace connected over a duplex TCP stream (`:18091 -> :8091`).
+> Native cross-platform desktop application (`eframe`/`egui`) and CLI hardware-in-the-loop QEMU (`qemu-system-aarch64`) emulator for Yandex Station smart speakers running Linux Buildroot firmware (Amlogic SoCs). Provides kernel/userspace peripheral emulation (`SN3236` I2C LEDs, `vfb` framebuffers, `sysfs` LEDs/clocks, `uinput` buttons/ToF, `IIO`/`thermal` sensors, `snd-aloop` ALSA audio), local Quasar Protobuf IPC stubs (`aliced` `:9875`, `yio_audio` `:9850`, `iohub_services` `:9903`), ADB root access (`:15555`), a userspace `.ext4` image builder, a built-in Rust ADB client (`:5555`), and the 60 FPS `Virtual Speaker Twin` desktop workspace connected over a duplex TCP stream (`:18091 -> :8091`).
 
 ## Documentation Index
 
-- [README.md](./README.md): Overview of Cargo Workspace architecture, emulated subsystems, supported/unsupported device tables, source build instructions (Windows/Linux), and GUI/CLI commands.
+- [README.md](./README.md): Quickstart, source build instructions (Windows/Linux), GUI/CLI usage, supported/unsupported device tables, and emulated subsystems.
 - [CONTEXT.md](./CONTEXT.md): Canonical domain glossary (`Board Profile`, `Board Peripherals`, `Firmware Dump`, `Guest Image`, `Hardware Bridge`, `Virtual Speaker Twin`, `Register Latch`, `Stealth Lock`, `Trigger Conflict`, `Hijack Window`, `Formant TTS Synthesizer`).
 - [protocol/src/lib.rs](./protocol/src/lib.rs): Duplex TCP bridge protocol contracts (`[u8 kind][u32_le len][payload]` on `:8091` / `:18091`), `BridgeStateSnapshot`, `HostCommand`, and `GuestPacket`.
-- [DUMP_GUIDE.md](./DUMP_GUIDE.md): Extracting clean `rootfs.tar.gz` dumps over network ADB (`:5555`) via `kuyase dump` and building `.ext4` images in userspace via `kuyase prepare`.
+- [DUMP_GUIDE.md](./DUMP_GUIDE.md): Extracting clean `rootfs.tar.gz` dumps over network ADB (`:5555`) via standalone scripts (`scripts/dump-from-adb.sh` / `.ps1`), manual `adb`, or `kuyase dump`, and building `.ext4` images in userspace via `kuyase prepare`.
+- [examples/README.md](./examples/README.md): Minimal Python multi-board headless test runner example (`test_yam_lineup.py`).
 - [AGENTS.md](./AGENTS.md): Agent workflow rules, cross-compilation/injection pipeline, and hardware emulation invariants.
 
 ## Repository Layout (3-Crate Cargo Workspace)
@@ -25,15 +26,17 @@
   - `hw-bridge/src/ipc.rs`: TCP servers for Quasar IPC (`:9875` `aliced`, `:9850` `yio_audio`, `:9903` `iohub_services`) and voice injection dialog state machine.
   - `hw-bridge/src/proto.rs`: Zero-dependency Protobuf wire encoder/decoder for `QuasarMessage` (`[u32_le_len][payload]`).
   - `hw-bridge/src/bridge_server.rs`: Duplex TCP server (`:8091` in guest -> `:18091` on host) pushing `GuestPacket::StateSnapshot` and `GuestPacket::PcmAudioChunk` frames and handling `HostCommand` requests.
-- `kuyase/`: Host desktop GUI application (`eframe`/`egui` + `egui_tiles`) and CLI runner crate.
-  - `kuyase/src/main.rs`: CLI entrypoint (`kuyase`, `kuyase run --headless`, `kuyase test`, `kuyase dump <ip>`, `kuyase prepare`).
+- `kuyase/`: Host desktop GUI application (`eframe`/`egui`) and CLI runner crate.
+  - `kuyase/src/main.rs`: CLI entrypoint (`kuyase`, `kuyase run --headless [--board <slug|all>] [--exec "<cmd>"] [--keep-alive] [--mode <stub|full>]`, `kuyase test`, `kuyase dump <ip>`, `kuyase prepare`).
   - `kuyase/src/session.rs`: `EmulatorSession` managing `qemu-system-aarch64` child process lifecycle, piped `ttyAMA0` serial `stdin`/`stdout`/`stderr`, secondary `virtio-blk` bridge injection, and `-snapshot` overlay mode.
   - `kuyase/src/bridge_client.rs`: Persistent duplex TCP client (`BridgeClient`) receiving `StateSnapshot` and `PcmAudioChunk` packets and sending `HostCommand` requests.
   - `kuyase/src/adb.rs`: Pure-Rust ADB TCP protocol client (`CNXN`, `OPEN`, `WRTE`, `CLSE`, `shell:`, and `sync:` `RECV`/`DATA`).
   - `kuyase/src/dumper.rs`: Network ADB firmware dumper (`kuyase dump <ip[:5555]>`) with automatic partition space probing and secret scrubbing.
-  - `kuyase/src/image_builder.rs` & `kuyase/src/ext_fs.rs`: Userspace `Guest Image` (`work/<board>-system.ext4`) builder supporting `rootfs.tar.gz`, `.tar`, `.zip`, `system.img[.gz]`, and `ubi`/`mtd` dumps without WSL2 or `sudo mount -o loop`.
+  - `kuyase/src/image_builder.rs`, `kuyase/src/archive_formats.rs` & `kuyase/src/ext_fs.rs`: Userspace `Guest Image` (`work/<board>-system.ext4`) builder supporting `rootfs.tar.gz`, `.tar`, `.zip`, `system.img[.gz]`, and `ubi0_0_rootfs.img` / `mtd3_system.bin` UBIFS/UBI dumps without WSL2 or `sudo mount -o loop`.
   - `kuyase/src/test_suite.rs`: Native multi-board hardware and Quasar IPC verification suite (`kuyase test`).
-  - `kuyase/src/gui/`: `egui_tiles` workspace (`Full Workbench` and `Compact Remote` presets persisted to `work/kuyase-ui.json`), 60 FPS `Virtual Speaker Twin` vector canvas (`canvas.rs`), interactive `ttyAMA0` terminal (`terminal.rs`), host audio playback & `.wav` recorder (`host_audio.rs`), amplifier/voice/IPC docks (`docks.rs`), and board/image/dump manager (`launcher.rs`).
+  - `kuyase/src/gui/`: GNOME Libadwaita-inspired desktop workspace (`work/kuyase-ui.json`), 60 FPS `Virtual Speaker Twin` vector canvas (`canvas.rs`), signal monitor & interactive `ttyAMA0` terminal dock (`terminal.rs`), host audio playback & `.wav` recorder (`host_audio.rs`), action cards (`docks.rs`), and modal image/dump/QEMU manager (`launcher.rs`).
+- `scripts/`: Standalone dump extraction and sanitization scripts (`dump-from-adb.sh`, `dump-from-adb.ps1`, `sanitize-rootfs.sh`, `sanitize-rootfs.ps1`) for pulling and cleaning firmware dumps without installing the emulator.
+- `examples/`: Minimal Python multi-board test runner (`test_yam_lineup.py`) demonstrating `kuyase run --headless --board all --snapshot --exec`.
 - `guest-init/equasar-qemu-init.sh`: Guest `PID 1` (`/quasar-qemu-init.sh`) that mounts virtual filesystems, spoofs `/proc/device-tree`, synthesizes `/sys/class/leds/*`, `/sys/class/graphics/fb0..2`, `/sys/bus/i2c/devices/*`, `/sys/class/power_supply/ya_pd`, and ALSA devices (`pcm.speakers`, `pcm.ultrasound`, `pcm.bluetooth`), starts `/usr/bin/adbd` (`:5555`), and launches `/usr/local/bin/qemu-hw-bridge`.
 - `kernel/build-kernel.sh`: Builds Linux `6.6.60` `arm64` (`kernel/Image`) with `CONFIG_COMPAT=y`, `snd-aloop`, `uinput`, patched `drivers/i2c/i2c-stub.c`, and 3-framebuffer `drivers/video/fbdev/vfb.c` (`fb0`, `fb1`, `fb2`).
 
@@ -95,12 +98,13 @@ All board-specific hardware peripherals are encapsulated behind 4 `Send + Sync` 
 - Expressive Russian Formant TTS (`hw-bridge/src/tts.rs`): procedural synthesis (number expansion, proclitic merging, Russian orthoepy/palatalization, Bryzgunova `IK-1/2/3` 3-point pitch contours, Rosenberg glottal pulse + 4-formant Klatt cascade/parallel resonator bank) streamed to ALSA in `40 ms` chunks with immediate `STOP_TTS` / `CANCEL_DIALOG` interruption.
 
 ### 5. Local Quasar IPC Sockets & Logs
-All sockets use little-endian length-prefixed framing `[u32_le_len][QuasarMessage protobuf]`:
-- `127.0.0.1:9875` (`aliced`): Accepts `QuasarMessage.remoting (field 210)` -> `Remoting { remote_object_id = 7 ("AliceCapability"), alice_capability_method = 8 }`:
-  - `method = 6` (`CANCEL_DIALOG_AND_CLEAR_QUEUE`) or `method = 14` (`STOP_TTS`): Cancels active dialog within the `1680 ms` Hijack Window (`aliced_hijack_count++`).
-  - `method = 18` (`START_VOCALIZE`) with `vocalize_directive (field 13) -> Text (field 1)`: Synthesizes speech in ALSA (`aliced_say_count++`, sets `last_spoken_text`).
-- `127.0.0.1:9850` (`yio_audio`): Streams `QuasarMessage.mic_input_data (field 158)` (`IOAudioChannelData`: `raw_mic_0..3`, `vqe_0`, `doa_angle` in fields `5`/`6`) at 20 Hz to subscribed clients.
-- `127.0.0.1:9903` (`iohub_services`): Broadcasts `io_event` key/button notifications.
+In `Stub Mode` (`quasar.mode=stub`), `qemu-hw-bridge` emulates the `maind` Protobuf IPC sockets (based on [`v3rt3p/quasar-protos`](https://github.com/v3rt3p/quasar-protos)) using little-endian length-prefixed framing `[u32_le_len][QuasarMessage protobuf]`:
+- `127.0.0.1:9875` (`aliced`): Accepts `QuasarMessage.remoting (field 210)`:
+  - `AliceCapability`: `method = 6` (`CANCEL_DIALOG_AND_CLEAR_QUEUE`) or `method = 14` (`STOP_TTS`) cancels active dialog within the `1680 ms` Hijack Window (`aliced_hijack_count++`) or interrupts active TTS; `method = 18` (`START_VOCALIZE` with `vocalize_directive -> Text`) synthesizes speech in ALSA (`aliced_say_count++`, sets `last_spoken_text`).
+  - `DeviceStateCapability`: updates `mics_muted`.
+  - `PlaybackControlCapability` & other `Remoting` capabilities: validated and logged (malformed Protobuf increments `ipc_error_count`).
+- `127.0.0.1:9850` (`yio_audio`): Streams `QuasarMessage.mic_input_data (field 158)` (`IOAudioChannelData`: `raw_mic_0..3`, `vqe_0`, `doa_angle` in fields `5`/`6`) every `40 ms` to subscribed clients.
+- `127.0.0.1:9903` (`iohub_services`): Accepts `IOControlCommand` packets (`RetrieveStateHandshake`, `ServiceReady`, `external_directives` JSON, `IoControlField`).
 - `/tmp/daemons_logs/maind.log` (symlinked to `/data/quasar/daemons_logs/maind.log` and `/bkupgrade/data/quasar/daemons_logs/maind.log`): Receives `[sdk] onRequestStateChanged: LISTENING, recognizedPhrase='...'` lines upon voice injection.
 
 ## Host Ports & Duplex Bridge Protocol (`protocol/src/lib.rs`)
@@ -118,7 +122,7 @@ All sockets use little-endian length-prefixed framing `[u32_le_len][QuasarMessag
     - `SetVolume { volume_level: 0..10 }`
     - `SetLedPattern { pattern: "alice_listening.led"|"" }`
     - `SetClockDisplay { segments, replace, pixels, led_frame, brightness, scale_brightness, text }`
-    - `SetSensor { doa_angle, mic_rms, als_lux, temp_c, tof_mm, swipe }`
+    - `SetSensor { doa_angle, mic_rms, als_lux, temp_c, tof_mm, swipe, swipe_direction }`
     - `InjectVoice { phrase, doa_angle, rms, wake_only }`
     - `IpcTest { cmd: "cancel_dialog"|"stop_tts"|"vocalize", text }`
     - `PlayTestTone`
