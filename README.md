@@ -66,9 +66,9 @@ cp -f target/armv7-unknown-linux-musleabihf/release/qemu-hw-bridge guest-init/bi
 cargo build --release -p kuyase
 ```
 
-### 3. Пересборка гостевого ядра `kernel/Image` (опционально, Linux)
+### 3. Пересборка гостевого ядра (Linux / WSL2)
 
-Если требуется пересобрать гостевое ядро Linux `6.6.60` (`arm64`, с `CONFIG_COMPAT=y`, патчами `i2c-stub` и тремя виртуальными фреймбуферами `vfb`):
+Если требуется самостоятельно пересобрать гостевое ядро Linux `6.6.60` (`arm64`, с `CONFIG_COMPAT=y`, патчами `i2c-stub` и тремя виртуальными фреймбуферами `vfb`), на **Windows потребуется WSL2** (Ubuntu/Debian), либо используйте готовый `kuyase-kernel-arm64.img` из [**GitHub Releases**](https://github.com/vypivshiy/kuyase/releases):
 
 ```bash
 sudo apt update && sudo apt install -y \
