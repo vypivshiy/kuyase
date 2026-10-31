@@ -14,7 +14,47 @@ mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 mount -t tmpfs tmpfs /run 2>/dev/null || true
 mount -t tmpfs tmpfs /var/run 2>/dev/null || true
 mount -t tmpfs tmpfs /bkupgrade 2>/dev/null || true
-[ -L /data ] || mount -t tmpfs tmpfs /data 2>/dev/null || true
+# Optional persistent /data: quasar.data=persist mounts a spare virtio disk
+# (ext4) instead of tmpfs, so an installed stack survives a guest reboot.
+DATA_MODE="tmpfs"
+for arg in $(cat /proc/cmdline); do
+  case "$arg" in
+    quasar.data=*) DATA_MODE="${arg#quasar.data=}" ;;
+  esac
+done
+DATA_MOUNTED=0
+# Some images ship /data as a symlink (e.g. -> /bkupgrade/data), so resolve it
+# and mount the persistent disk on the real directory. `readlink -f` cannot be
+# used: the target may not exist yet.
+DATA_TARGET=/data
+if [ -L /data ]; then
+  _link=$(readlink /data 2>/dev/null || true)
+  case "$_link" in
+    /*) DATA_TARGET="$_link" ;;
+    ?*) DATA_TARGET="/bkupgrade/$_link" ;;
+  esac
+  case "$DATA_TARGET" in
+    ""|/) DATA_TARGET=/data ;;
+  esac
+fi
+if [ "$DATA_MODE" = "persist" ]; then
+  mkdir -p "$DATA_TARGET" 2>/dev/null || true
+  # virtio-blk disks can appear a moment after the root device; retry briefly.
+  _i=0
+  while [ "$_i" -lt 15 ] && [ "$DATA_MOUNTED" != "1" ]; do
+    for dev in /dev/vdc /dev/vdb /dev/vdd; do
+      [ -b "$dev" ] || continue
+      if mount -t ext4 "$dev" "$DATA_TARGET" 2>/dev/null; then DATA_MOUNTED=1; break; fi
+    done
+    [ "$DATA_MOUNTED" = "1" ] && break
+    _i=$((_i + 1))
+    sleep 1
+  done
+fi
+[ "$DATA_MODE" = "persist" ] && echo "data-persist target=$DATA_TARGET mounted=$DATA_MOUNTED tries=$_i" > /tmp/data-mount.log 2>/dev/null || true
+if [ "$DATA_MOUNTED" != "1" ]; then
+  mount -t tmpfs tmpfs "$DATA_TARGET" 2>/dev/null || true
+fi
 mount -t tmpfs tmpfs /sys 2>/dev/null || true
 
 chmod 666 /dev/ptmx /dev/null /dev/zero /dev/urandom /dev/tty 2>/dev/null || true
@@ -74,6 +114,50 @@ hostname "qemu-${BOARD}" 2>/dev/null || true
 
 # 2. Ensure loopback is up (eth0 is configured via kernel `ip=dhcp`)
 ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null || true
+
+# 2b. Optional LAN NIC. When the host passes a second virtio NIC (52:4b:59:xx,
+# a tap on a dedicated bridge) the speaker lives directly on the physical LAN,
+# so AirPlay/mDNS is reachable from a real iPhone. eth0 stays management.
+# The AirPlay plugin advertises mDNS on wlan0 only, so the NIC carries that name.
+lan_dhcp_up() {
+  tries=0
+  while [ $tries -lt 6 ]; do
+    got=0
+    # /sys/class/net is masked by the fake identity tree, so enumerate links
+    # through netlink instead.
+    for n in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1); do
+      case "$n" in
+        lo|eth0|sit0|docker*|veth*|br-*|tap*) continue ;;
+      esac
+      case "$(ip -o link show "$n" 2>/dev/null | sed -n 's/.*link\/ether \([0-9a-f:]*\).*/\1/p')" in
+        52:4b:59:*)
+          if [ "$n" != "wlan0" ]; then
+            ip link set "$n" down 2>/dev/null || true
+            ip link set "$n" name wlan0 2>/dev/null || true
+          fi
+          ;;
+        *) continue ;;
+      esac
+      n=wlan0
+      ip link set "$n" up 2>/dev/null || ifconfig "$n" up 2>/dev/null || true
+      ip -4 addr show "$n" 2>/dev/null | grep -q 'inet ' && { got=1; continue; }
+      udhcpc -i "$n" -n -q -t 6 -T 3 -s /usr/share/udhcpc/default.script \
+        >"/tmp/udhcpc-$n.log" 2>&1 || true
+      if ip -4 addr show "$n" 2>/dev/null | grep -q 'inet '; then
+        got=1
+        # renew the lease in the background
+        ( while :; do sleep 1800; \
+            udhcpc -i "$n" -n -q -t 3 -T 3 -s /usr/share/udhcpc/default.script \
+              >/dev/null 2>&1; done ) &
+      fi
+    done
+    [ "$got" = 1 ] && return 0
+    tries=$((tries + 1))
+    sleep 5
+  done
+  return 0
+}
+lan_dhcp_up &
 
 # 3. Ensure passwordless root login for ADB shell
 cat > /etc/passwd << 'EOF'
