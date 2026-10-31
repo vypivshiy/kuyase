@@ -64,6 +64,12 @@ impl BoardProfile {
                     }
                 }
             }
+            if let Ok(raw) = fs::read_to_string("/etc/quasar-board") {
+                let s = raw.trim();
+                if !s.is_empty() {
+                    return s.to_string();
+                }
+            }
             if Path::new("/sys/class/leds/cucumber:red:ring0").exists()
                 || Path::new("/boot/yandex-cucumber-i2ctop-overlay.dtb").exists()
             {
@@ -72,10 +78,25 @@ impl BoardProfile {
                 || Path::new("/boot/yandex-orion-i2c_top-overlay.dtb").exists()
             {
                 "orion".to_string()
+            } else if Path::new("/sys/class/leds/plum:red:ring1").exists()
+                || Path::new("/sys/class/leds/plum:red:ring0").exists()
+            {
+                if Path::new("/sys/class/leds/plum:white:clock-a1").exists() {
+                    "plum".to_string()
+                } else {
+                    "plumnc".to_string()
+                }
+            } else if Path::new("/sys/class/leds/station2:red:ring0").exists() {
+                "station2".to_string()
             } else if Path::new("/sys/class/leds/mini2:red:ring0").exists()
+                || Path::new("/sys/class/leds/mini2:red:ring1").exists()
                 || Path::new("/etc/init.d/S61leds_brightness").exists()
             {
-                "yandexmini2".to_string()
+                if Path::new("/sys/class/leds/mini2:white:clock-a1").exists() {
+                    "yandexmini2".to_string()
+                } else {
+                    "yandexmini2nc".to_string()
+                }
             } else if Path::new("/sys/class/leds/micro:red:ring0").exists()
                 || Path::new("/sys/class/leds/micro:red:ring1").exists()
             {
@@ -143,7 +164,7 @@ impl BoardProfile {
                 ),
                 "plum" => (
                     "plum".to_string(),
-                    "Яндекс Станция Лайт 2 Plum (plum)".to_string(),
+                    "Яндекс Станция Лайт 2 Plum (3 LED + часы)".to_string(),
                     "plum".to_string(),
                     3,
                     0,
@@ -152,7 +173,7 @@ impl BoardProfile {
                 ),
                 "plumnc" => (
                     "plumnc".to_string(),
-                    "Яндекс Станция Лайт 2 Prune (без часов)".to_string(),
+                    "Яндекс Станция Лайт 2 Prune (3 LED, без часов)".to_string(),
                     "plum".to_string(),
                     3,
                     0,
@@ -259,6 +280,7 @@ pub struct BridgeState {
     pub logo_leds: usize,
     pub ambilight_leds: usize,
     pub has_clock: bool,
+    pub full_mode: bool,
     pub doa_angle: AtomicU32,
     pub mic_rms: AtomicU32,
     pub mics_muted: AtomicBool,
@@ -286,6 +308,7 @@ pub struct BridgeState {
     pub native_led_frame: Mutex<Vec<[u8; 3]>>,
     pub native_aux_frame: Mutex<Vec<[u8; 3]>>,
     pub last_spoken_text: Mutex<String>,
+    pub bridge_clients: Mutex<Vec<std::sync::mpsc::SyncSender<protocol::GuestPacket>>>,
     pub peripherals: BoardPeripherals,
 }
 
@@ -299,6 +322,9 @@ impl BridgeState {
         let peripherals = BoardPeripherals::from_profile(&profile);
         let ring_leds = profile.ring_leds;
         let aux_zones = peripherals.aux_light.zone_count();
+        let full_mode = fs::read_to_string("/proc/cmdline")
+            .map(|c| c.split_whitespace().any(|t| t == "quasar.mode=full"))
+            .unwrap_or(false);
         Self {
             board_slug: profile.board_slug,
             board_name: profile.board_name,
@@ -306,6 +332,7 @@ impl BridgeState {
             logo_leds: profile.logo_leds,
             ambilight_leds: profile.ambilight_leds,
             has_clock: profile.has_clock,
+            full_mode,
             doa_angle: AtomicU32::new(0),
             mic_rms: AtomicU32::new(60),
             mics_muted: AtomicBool::new(false),
@@ -332,8 +359,20 @@ impl BridgeState {
             native_led_frame: Mutex::new(vec![[0u8; 3]; ring_leds]),
             native_aux_frame: Mutex::new(vec![[0u8; 3]; aux_zones]),
             last_spoken_text: Mutex::new(String::new()),
+            bridge_clients: Mutex::new(Vec::new()),
             peripherals,
         }
+    }
+
+    pub fn broadcast_audio_chunk(&self, pcm_chunk: Vec<u8>) {
+        let mut clients = self.bridge_clients.lock().unwrap();
+        clients.retain(|tx| {
+            match tx.try_send(protocol::GuestPacket::PcmAudioChunk(pcm_chunk.clone())) {
+                Ok(()) => true,
+                Err(std::sync::mpsc::TrySendError::Full(_)) => true,
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
+            }
+        });
     }
 
     pub fn alice_state(&self) -> AliceState {
@@ -360,6 +399,7 @@ impl BridgeState {
             "Volume changed -> {}/10 (master_volume={}, LED volume.led arc active)",
             clamped, raw_vol
         ));
+        crate::leds::sync_immediate_led_state(self);
     }
 
     pub fn log(&self, msg: impl Into<String>) {

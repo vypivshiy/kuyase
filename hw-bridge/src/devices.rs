@@ -4,7 +4,7 @@
 //! устройство колонки представлено чистым `Send + Sync` трейтом по своей роли:
 //!
 //! 1. [`LedRingDevice`] — адресное световое кольцо (`SN3236` I2C `0x3c`, `sysfs`
-//!    или ядерный фреймбуфер `quasar_led_ring.ko` с защитой триггера `[ledfb-ring]`).
+//!    или фреймбуфер драйвера `quasar_led_ring.ko` с защитой триггера `[ledfb-ring]`).
 //! 2. [`AuxLightDevice`] — дополнительная подсветка корпуса (`12×2 RGBW` эмбиент
 //!    Станции 3 `orion` на `/dev/fb0` + `sysfs`, либо `logo0..N` на `cucumber`/`pickle`/`mango`).
 //! 3. [`FrontDisplayDevice`] — фронтальный индикатор времени, громкости и эмоций
@@ -16,7 +16,7 @@
 
 use crate::leds::parse_led_pattern_str;
 use crate::state::BoardProfile;
-use serde::Serialize;
+pub use protocol::{AmplifierSlotState, UltrasoundState};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Read;
@@ -375,13 +375,6 @@ impl LedRingDevice for SysfsFbLedRing {
 
     fn read_ring(&self, native_frame: &[[u8; 3]], conflict_counter: &AtomicU32) -> RingReadout {
         let prefix = &self.sysfs_prefix;
-        let trig = read_active_trigger(&format!("/sys/class/leds/{}:red:ring0/trigger", prefix));
-        let trigger = if trig == "none" {
-            "none (Custom Override)".to_string()
-        } else {
-            format!("{} (Quasar Native)", trig)
-        };
-
         let first = if Path::new(&format!(
             "/sys/class/leds/{}:red:ring0/brightness",
             prefix
@@ -392,6 +385,17 @@ impl LedRingDevice for SysfsFbLedRing {
         } else {
             1
         };
+
+        let trig = read_active_trigger(&format!(
+            "/sys/class/leds/{}:red:ring{}/trigger",
+            prefix, first
+        ));
+        let trigger = if trig == "none" {
+            "none (Custom Override)".to_string()
+        } else {
+            format!("{} (Quasar Native)", trig)
+        };
+
         let mut any_sysfs = false;
         let mut sysfs_pixels = vec![[0u8; 3]; self.leds];
         for (i, slot) in sysfs_pixels.iter_mut().enumerate().take(self.leds) {
@@ -422,7 +426,7 @@ impl LedRingDevice for SysfsFbLedRing {
         }
 
         if any_sysfs {
-            for i in 0..=self.leds {
+            for i in first..(first + self.leds) {
                 for c in ["red", "green", "blue"] {
                     let _ = fs::write(
                         format!("/sys/class/leds/{}:{}:ring{}/brightness", prefix, c, i),
@@ -516,7 +520,22 @@ impl AuxLightDevice for LogoSysfsFbDevice {
         self.count
     }
 
-    fn init(&self) {}
+    fn init(&self) {
+        for i in 0..self.count {
+            for c in ["red", "green", "blue"] {
+                let dir = format!("/sys/class/leds/{}:{}:logo{}", self.sysfs_prefix, c, i);
+                if !Path::new(&dir).exists() {
+                    let _ = fs::create_dir_all(&dir);
+                    let _ = fs::write(format!("{}/brightness", dir), "0\n");
+                    let _ = fs::write(format!("{}/max_brightness", dir), "255\n");
+                    let _ = fs::write(format!("{}/trigger", dir), "[ledfb-logo] none\n");
+                }
+            }
+        }
+        if !Path::new("/dev/fb1").exists() && self.count > 0 {
+            let _ = fs::write("/dev/fb1", vec![0u8; self.count * 3]);
+        }
+    }
 
     fn read_zones(&self, native_frame: &[[u8; 3]]) -> Vec<[u8; 3]> {
         let mut out = vec![[0u8; 3]; self.count];
@@ -539,7 +558,19 @@ impl AuxLightDevice for LogoSysfsFbDevice {
             }
             *slot = [r, g, b];
         }
-        if !any_sysfs && native_frame.len() >= self.count {
+        if any_sysfs {
+            return out;
+        }
+        if let Ok(raw) = fs::read("/dev/fb1") {
+            if raw.len() >= self.count * 3 && raw[..self.count * 3].iter().any(|&b| b > 0) {
+                for i in 0..self.count {
+                    let base = i * 3;
+                    out[i] = [raw[base], raw[base + 1], raw[base + 2]];
+                }
+                return out;
+            }
+        }
+        if native_frame.len() >= self.count {
             let any_native = native_frame
                 .iter()
                 .take(self.count)
@@ -553,7 +584,17 @@ impl AuxLightDevice for LogoSysfsFbDevice {
         out
     }
 
-    fn write_native_frame(&self, _px: &[[u8; 3]]) {}
+    fn write_native_frame(&self, px: &[[u8; 3]]) {
+        if self.count == 0 {
+            return;
+        }
+        let mut raw = Vec::with_capacity(self.count * 3);
+        for i in 0..self.count {
+            let c = px.get(i % px.len().max(1)).copied().unwrap_or([0, 0, 0]);
+            raw.extend_from_slice(&c);
+        }
+        let _ = fs::write("/dev/fb1", raw);
+    }
 }
 
 /// Эмбиент-подсветка Яндекс Станции 3 (`orion`):
@@ -947,6 +988,7 @@ impl FrontDisplayDevice for NullFrontDisplay {
 pub struct SegmentClockSysfsDisplay {
     pub sysfs_prefix: String,
     pub saved_segments: Mutex<BTreeMap<String, u8>>,
+    pub active_mask: Mutex<BTreeMap<String, bool>>,
     pub saved_pixels: Mutex<Vec<u8>>,
 }
 
@@ -955,6 +997,7 @@ impl SegmentClockSysfsDisplay {
         Self {
             sysfs_prefix,
             saved_segments: Mutex::new(empty_clock_segments_map()),
+            active_mask: Mutex::new(BTreeMap::new()),
             saved_pixels: Mutex::new(vec![0u8; OrionMatrix21x12Display::PIXELS]),
         }
     }
@@ -1050,11 +1093,17 @@ impl FrontDisplayDevice for SegmentClockSysfsDisplay {
 
     fn write_display_segments(&self, segments: &BTreeMap<String, u8>, replace_all: bool) {
         let mut cur = self.saved_segments.lock().unwrap();
+        let mut mask = self.active_mask.lock().unwrap();
         if replace_all {
             *cur = empty_clock_segments_map();
+            mask.clear();
             for (k, &v) in segments {
                 if is_valid_clock_segment(k) {
-                    cur.insert(k.to_ascii_lowercase(), v);
+                    let loc = k.to_ascii_lowercase();
+                    cur.insert(loc.clone(), v);
+                    if v > 0 {
+                        mask.insert(loc, true);
+                    }
                 }
             }
             for (loc, &val) in cur.iter() {
@@ -1069,6 +1118,11 @@ impl FrontDisplayDevice for SegmentClockSysfsDisplay {
                 if is_valid_clock_segment(k) {
                     let loc = k.to_ascii_lowercase();
                     cur.insert(loc.clone(), val);
+                    if val > 0 {
+                        mask.insert(loc.clone(), true);
+                    } else {
+                        mask.remove(&loc);
+                    }
                     let p = format!(
                         "/sys/class/leds/{}:white:clock-{}/brightness",
                         self.sysfs_prefix, loc
@@ -1107,13 +1161,24 @@ impl FrontDisplayDevice for SegmentClockSysfsDisplay {
 
     fn scale_active_brightness(&self, brightness: u8) {
         let current = self.read_display().clock_segments;
-        let mut updated = current;
-        for val in updated.values_mut() {
-            if *val > 0 {
-                *val = brightness;
+        {
+            let mut mask = self.active_mask.lock().unwrap();
+            for (k, &v) in &current {
+                if v > 0 {
+                    mask.insert(k.clone(), true);
+                }
             }
         }
-        self.write_display_segments(&updated, false);
+        let mask_keys: Vec<String> = self.active_mask.lock().unwrap().keys().cloned().collect();
+        let mut cur = self.saved_segments.lock().unwrap();
+        for k in &mask_keys {
+            cur.insert(k.clone(), brightness);
+            let p = format!(
+                "/sys/class/leds/{}:white:clock-{}/brightness",
+                self.sysfs_prefix, k
+            );
+            let _ = fs::write(p, brightness.to_string());
+        }
         for v in self.saved_pixels.lock().unwrap().iter_mut() {
             if *v > 0 {
                 *v = brightness;
@@ -1131,6 +1196,7 @@ impl FrontDisplayDevice for SegmentClockSysfsDisplay {
 ///   а готовые анимации лежат в `/system/vendor/quasar/ledpatterns/screen/*.led`.
 pub struct OrionMatrix21x12Display {
     pub saved_pixels: Mutex<Vec<u8>>,
+    pub active_mask: Mutex<Vec<bool>>,
     pub virtual_clock_segments: Mutex<BTreeMap<String, u8>>,
     pub volume_overlay_active: AtomicBool,
     pub last_volume_level: AtomicU32,
@@ -1143,8 +1209,10 @@ impl OrionMatrix21x12Display {
 
     pub fn new() -> Self {
         let initial_px = Self::render_text_to_matrix("12:00", 255);
+        let mask = initial_px.iter().map(|&v| v > 0).collect();
         Self {
             saved_pixels: Mutex::new(initial_px),
+            active_mask: Mutex::new(mask),
             virtual_clock_segments: Mutex::new(
                 SegmentClockSysfsDisplay::build_segments_map_from_text("12:00", 255),
             ),
@@ -1240,13 +1308,14 @@ impl OrionMatrix21x12Display {
             }
         };
 
-        // Расстановка по горизонтали (21 столбец):
-        // Для 4 цифр с двоеточием (`19:30`): x = [1, 6, (10 = ':'), 12, 17] -> ровно 21 столбец!
+        // Расстановка по горизонтали (21 столбец, 0..=20):
+        // Для 4 цифр с двоеточием (`19:30`): 0..3 (цифра 1), 4 (пусто), 5..8 (цифра 2),
+        // 9 (пусто), 10 (двоеточие ':'), 11 (пусто), 12..15 (цифра 3), 16 (пусто), 17..20 (цифра 4).
         let x_positions: &[usize] = match (chars.len(), has_colon) {
-            (4, true) => &[1, 6, 12, 17],
-            (4, false) => &[1, 6, 11, 16],
-            (3, _) => &[2, 7, 12],
-            (2, _) => &[5, 11],
+            (4, true) => &[0, 5, 12, 17],
+            (4, false) => &[0, 5, 10, 15],
+            (3, _) => &[1, 6, 11],
+            (2, _) => &[4, 10],
             (1, _) => &[8],
             _ => &[],
         };
@@ -1271,14 +1340,19 @@ impl OrionMatrix21x12Display {
         }
 
         if has_degree {
-            let deg_x = x_positions
-                .last()
-                .map(|&x| (x + 5).min(Self::WIDTH - 2))
-                .unwrap_or(18);
-            put_px(&mut grid, deg_x, y0, brightness);
-            put_px(&mut grid, deg_x + 1, y0, brightness);
-            put_px(&mut grid, deg_x, y0 + 1, brightness);
-            put_px(&mut grid, deg_x + 1, y0 + 1, brightness);
+            if chars.len() >= 4 {
+                put_px(&mut grid, 20, 0, brightness);
+            } else {
+                let deg_x = x_positions
+                    .last()
+                    .map(|&x| (x + 5).min(Self::WIDTH - 3))
+                    .unwrap_or(16);
+                // Полый кружок 3x3 для знака градуса
+                put_px(&mut grid, deg_x + 1, y0, brightness);
+                put_px(&mut grid, deg_x, y0 + 1, brightness);
+                put_px(&mut grid, deg_x + 2, y0 + 1, brightness);
+                put_px(&mut grid, deg_x + 1, y0 + 2, brightness);
+            }
         }
 
         grid
@@ -1374,6 +1448,8 @@ impl FrontDisplayDevice for OrionMatrix21x12Display {
         }
         *self.virtual_clock_segments.lock().unwrap() =
             SegmentClockSysfsDisplay::build_segments_map_from_text(text, brightness);
+        let mask_grid = Self::render_text_to_matrix(text, 255);
+        *self.active_mask.lock().unwrap() = mask_grid.iter().map(|&v| v > 0).collect();
         let grid = Self::render_text_to_matrix(text, brightness);
         *self.saved_pixels.lock().unwrap() = grid.clone();
         self.write_matrix_to_fb(&grid);
@@ -1396,6 +1472,9 @@ impl FrontDisplayDevice for OrionMatrix21x12Display {
         for (i, &v) in pixels.iter().enumerate().take(Self::PIXELS) {
             grid[i] = v;
         }
+        if grid.iter().any(|&v| v > 0) || pixels.is_empty() {
+            *self.active_mask.lock().unwrap() = grid.iter().map(|&v| v > 0).collect();
+        }
         *self.saved_pixels.lock().unwrap() = grid.clone();
         self.write_matrix_to_fb(&grid);
     }
@@ -1415,13 +1494,22 @@ impl FrontDisplayDevice for OrionMatrix21x12Display {
     }
 
     fn scale_active_brightness(&self, brightness: u8) {
-        let mut px = self.read_display().screen_pixels;
-        for v in px.iter_mut() {
-            if *v > 0 {
-                *v = brightness;
+        let cur_px = self.read_display().screen_pixels;
+        {
+            let mut mask = self.active_mask.lock().unwrap();
+            if cur_px.iter().any(|&v| v > 0) {
+                *mask = cur_px.iter().map(|&v| v > 0).collect();
             }
         }
-        self.write_display_pixels(&px);
+        let mask = self.active_mask.lock().unwrap().clone();
+        let mut px = vec![0u8; Self::PIXELS];
+        for i in 0..Self::PIXELS {
+            if *mask.get(i).unwrap_or(&false) {
+                px[i] = brightness;
+            }
+        }
+        *self.saved_pixels.lock().unwrap() = px.clone();
+        self.write_matrix_to_fb(&px);
         for v in self.virtual_clock_segments.lock().unwrap().values_mut() {
             if *v > 0 {
                 *v = brightness;
@@ -1449,29 +1537,6 @@ impl FrontDisplayDevice for OrionMatrix21x12Display {
 // ============================================================================
 // 4. Трейт аудиоподсистемы (`AudioSubsystemDevice`: 4× ACM8625S + Ultrasound TDM)
 // ============================================================================
-
-#[derive(Clone, Debug, Serialize)]
-pub struct AmplifierSlotState {
-    pub i2c_device: String,
-    pub role: String,
-    pub alsa_prefix: String,
-    pub settings_file: String,
-    pub gain_db: f32,
-    pub ramp_db: f32,
-    pub muted: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct UltrasoundState {
-    pub enabled: bool,
-    pub tdm_device: String,
-    pub sample_rate_hz: u32,
-    pub carrier_freq_hz: u32,
-    pub bandwidth_hz: u32,
-    pub channels: u32,
-    pub active: bool,
-    pub rms: u32,
-}
 
 pub struct AudioHwReadout {
     pub amplifiers: Vec<AmplifierSlotState>,

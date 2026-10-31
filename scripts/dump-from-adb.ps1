@@ -50,30 +50,38 @@ Write-Host "[1/3] Подключение к колонке по сети ($Targe
 $ModelRaw = (Invoke-Adb @("shell", "tr '\0' ' ' < /proc/device-tree/compatible 2>/dev/null; echo; cat /proc/device-tree/model 2>/dev/null")) -join " "
 $DevTypeCfg = ((Invoke-Adb @("shell", 'sed -n "s/.*\"deviceType\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" /system/vendor/quasar/quasar.cfg 2>/dev/null | head -n 1')) -join "").Trim()
 $Slug = "unknown"
-switch -Regex ($DevTypeCfg) {
-    "^cucumber$" { $Slug = "cucumber"; break }
-    "^(bergamot|mini3)$" { $Slug = "bergamot"; break }
-    "^(pickle|mini3pro)$" { $Slug = "pickle"; break }
-    "^(orion|station3)$" { $Slug = "orion"; break }
-    "^(plum|lite2)$" { $Slug = "plum"; break }
-    "^(mango|street)$" { $Slug = "mango"; break }
-    "^(saturn|hub)$" { $Slug = "saturn"; break }
-    "^(station_2|station-midi|yandexmidi|station2)$" { $Slug = "station2"; break }
-    "^(yandexmini_2|mini2|yandexmini2)$" { $Slug = "yandexmini2"; break }
-    "^(yandexmicro|lite1|micro)$" { $Slug = "yandexmicro"; break }
-    "^(yandexmini|mini1)$" { $Slug = "yandexmini"; break }
-    "^.+$" { $Slug = $DevTypeCfg; break }
+if ($ModelRaw -match "prune") {
+    $Slug = "plumnc"
+} else {
+    switch -Regex ($DevTypeCfg) {
+        "^cucumber$" { $Slug = "cucumber"; break }
+        "^(bergamot|mini3)$" { $Slug = "bergamot"; break }
+        "^(pickle|mini3pro)$" { $Slug = "pickle"; break }
+        "^(orion|station3)$" { $Slug = "orion"; break }
+        "^(plumnc|prune|lite2nc)$" { $Slug = "plumnc"; break }
+        "^(plum|lite2)$" { $Slug = "plum"; break }
+        "^(mango|street)$" { $Slug = "mango"; break }
+        "^(saturn|hub)$" { $Slug = "saturn"; break }
+        "^(station_2|station-midi|yandexmidi|station2)$" { $Slug = "station2"; break }
+        "^(yandexmini_2_no_clock|yandexmini2nc|mini2nc)$" { $Slug = "yandexmini2nc"; break }
+        "^(yandexmini_2|mini2|yandexmini2)$" { $Slug = "yandexmini2"; break }
+        "^(yandexmicro|lite1|micro)$" { $Slug = "yandexmicro"; break }
+        "^(yandexmini|mini1)$" { $Slug = "yandexmini"; break }
+        "^.+$" { $Slug = $DevTypeCfg; break }
+    }
 }
 if ($Slug -eq "unknown") {
     if ($ModelRaw -match "cucumber") { $Slug = "cucumber" }
     elseif ($ModelRaw -match "bergamot") { $Slug = "bergamot" }
     elseif ($ModelRaw -match "pickle") { $Slug = "pickle" }
     elseif ($ModelRaw -match "orion") { $Slug = "orion" }
+    elseif ($ModelRaw -match "prune") { $Slug = "plumnc" }
     elseif ($ModelRaw -match "plum") { $Slug = "plum" }
     elseif ($ModelRaw -match "mango") { $Slug = "mango" }
     elseif ($ModelRaw -match "saturn") { $Slug = "saturn" }
     elseif ($ModelRaw -match "station-midi") { $Slug = "station2" }
-    elseif ($ModelRaw -match "yandexmini_2") { $Slug = "yandexmini2" }
+    elseif ($ModelRaw -match "yandexmini2nc|mini2nc") { $Slug = "yandexmini2nc" }
+    elseif ($ModelRaw -match "yandexmini_2|mini2") { $Slug = "yandexmini2" }
     elseif ($ModelRaw -match "yandexmicro") { $Slug = "yandexmicro" }
     elseif ($ModelRaw -match "axg") { $Slug = "yandexmini" }
 }

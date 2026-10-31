@@ -179,37 +179,19 @@ pub fn spawn_alsa_loopback_capture(state: Arc<BridgeState>) {
                     if rms <= 5 {
                         hangover_chunks = hangover_chunks.saturating_sub(1);
                     }
-                    let mut cap = state.captured_pcm.lock().unwrap();
-                    if cap.len() < 4 * 1024 * 1024 {
-                        cap.extend_from_slice(&buf[..n]);
+                    {
+                        let mut cap = state.captured_pcm.lock().unwrap();
+                        if cap.len() < 4 * 1024 * 1024 {
+                            cap.extend_from_slice(&buf[..n]);
+                        }
                     }
+                    state.broadcast_audio_chunk(buf[..n].to_vec());
                 }
             }
         }
         let _ = child.wait();
         thread::sleep(Duration::from_millis(500));
     });
-}
-
-pub fn build_wav_bytes(pcm: &[u8], sample_rate: u32, channels: u16) -> Vec<u8> {
-    let data_len = pcm.len() as u32;
-    let byte_rate = sample_rate * (channels as u32) * 2;
-    let block_align = channels * 2;
-    let mut out = Vec::with_capacity(44 + pcm.len());
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(36 + data_len).to_le_bytes());
-    out.extend_from_slice(b"WAVEfmt ");
-    out.extend_from_slice(&16u32.to_le_bytes());
-    out.extend_from_slice(&1u16.to_le_bytes());
-    out.extend_from_slice(&channels.to_le_bytes());
-    out.extend_from_slice(&sample_rate.to_le_bytes());
-    out.extend_from_slice(&byte_rate.to_le_bytes());
-    out.extend_from_slice(&block_align.to_le_bytes());
-    out.extend_from_slice(&16u16.to_le_bytes());
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&data_len.to_le_bytes());
-    out.extend_from_slice(pcm);
-    out
 }
 
 pub fn ensure_alsa_compat_lib() {

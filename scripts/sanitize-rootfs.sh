@@ -85,16 +85,11 @@ report_issue() {
   TOTAL_ISSUES=$((TOTAL_ISSUES + 1))
 }
 
-# ---------------------------------------------------------------------------
-# 1. Аудит и очистка дерева корневой ФС (распакованная директория или mountpoint)
-# ---------------------------------------------------------------------------
 audit_and_clean_rootfs_tree() {
   local root="$1"
   local label="$2"
   local do_clean="$3"
 
-  # [A] Пользовательские разделы, токены, ключи шифрования и runtime-данные
-  # (/data, /bkupgrade, /tee, /nv, /env, /ota, /var/db/dhcpcd, /var/lib/chrony)
   local part_dirs=("data" "bkupgrade" "tee" "nv" "env" "ota" "tmp" "run" "var/run" "var/db/dhcpcd" "var/lib/chrony")
   for pd in "${part_dirs[@]}"; do
     local full_pd="${root}/${pd}"
@@ -113,7 +108,6 @@ audit_and_clean_rootfs_tree() {
     fi
   done
 
-  # [B] Файлы учетных данных Wi-Fi, паролей, ключей SSH/Dropbear и сторонних демонов в /etc/init.d
   local secret_paths=(
     "etc/wpa_supplicant.conf"
     "etc/hostapd_temp.conf"
@@ -142,7 +136,6 @@ audit_and_clean_rootfs_tree() {
     fi
   done
 
-  # Поиск любых БД SQLite (*.db, *.sqlite*) в /etc, /var, /root
   local db_files
   db_files="$(find "${root}/etc" "${root}/var" "${root}/root" \( -name "*.db" -o -name "*.sqlite*" \) -type f 2>/dev/null || true)"
   if [ -n "${db_files}" ]; then
@@ -155,7 +148,6 @@ audit_and_clean_rootfs_tree() {
     done <<< "${db_files}"
   fi
 
-  # [C] Нештатные записи / локальные IP-адреса (MITM/DNS) в /etc/hosts и /etc/init.d/*
   if [ -f "${root}/etc/hosts" ]; then
     local extra_hosts
     extra_hosts="$(grep -vE '^(127\.0\.0\.1[[:space:]]+localhost|127\.0\.1\.1[[:space:]]+[A-Za-z0-9_.-]+|[[:space:]]*)$' "${root}/etc/hosts" 2>/dev/null || true)"
@@ -191,9 +183,6 @@ audit_and_clean_rootfs_tree() {
   fi
 }
 
-# ---------------------------------------------------------------------------
-# 2. Аудит и очистка архива rootfs (*.tar.gz / *.tgz)
-# ---------------------------------------------------------------------------
 process_tar_archive() {
   local archive="$1"
   local do_clean="$2"
@@ -217,9 +206,6 @@ process_tar_archive() {
   rm -rf "${tmp_dir}"
 }
 
-# ---------------------------------------------------------------------------
-# 3. Аудит и очистка образа .ext4 (включая raw-блоки неразмеченной области)
-# ---------------------------------------------------------------------------
 process_ext4_image() {
   local img="$1"
   local do_clean="$2"
@@ -244,7 +230,6 @@ process_ext4_image() {
   fi
   rmdir "${mnt}" 2>/dev/null || true
 
-  # Проверка неразмеченных блоков (raw binary grep) на следы удалённых ключей, серийников и локальных IP
   local raw_hits
   raw_hits="$(grep -a -o -E '(.{0,20}(androidboot\.serialno=[0-9A-Za-z]{6,}|quasar-[0-9a-fA-F]{6,}|10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3}|ssh-(rsa|ed25519)|AAAAC3Nza).{0,20})' "${img}" 2>/dev/null | grep -vE '(androidboot\.serialno=1234567890|10\.10\.10\.254|10\.0\.0\.0|192\.168\.5\.1)' | head -n 10 || true)"
   if [ -n "${raw_hits}" ]; then
@@ -278,9 +263,6 @@ process_ext4_image() {
   fi
 }
 
-# ---------------------------------------------------------------------------
-# Обход всех переданных целей
-# ---------------------------------------------------------------------------
 for target in "${TARGETS[@]}"; do
   if [ ! -e "${target}" ]; then
     echo "[sanitize] Путь не найден: ${target}" >&2

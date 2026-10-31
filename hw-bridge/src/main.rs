@@ -1,6 +1,6 @@
 mod audio;
+mod bridge_server;
 mod devices;
-mod http;
 mod input;
 mod ipc;
 mod leds;
@@ -52,12 +52,23 @@ fn main() {
         state.peripherals.front_display.display_kind(),
     ));
 
+    if state.full_mode {
+        state.log(
+            "Mode: Full (quasar.mode=full) — yielding IPC (:9850/:9875/:9903) to native firmware daemons (/system/vendor/quasar/onboot.sh)"
+                .to_string(),
+        );
+    } else {
+        state.log(
+            "Mode: Stub (quasar.mode=stub) — autonomous Quasar IPC & Formant TTS active"
+                .to_string(),
+        );
+        ipc::spawn_yio_audio_server(state.clone());
+        ipc::spawn_aliced_ipc_server(state.clone());
+        ipc::spawn_iohub_services_ipc_server(state.clone());
+    }
     leds::spawn_native_led_animator(state.clone());
-    ipc::spawn_yio_audio_server(state.clone());
-    ipc::spawn_aliced_ipc_server(state.clone());
-    ipc::spawn_iohub_services_ipc_server(state.clone());
     audio::spawn_alsa_loopback_capture(state.clone());
     input::spawn_serial_console_watcher();
 
-    http::run_server(state);
+    bridge_server::run_server(state);
 }

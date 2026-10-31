@@ -13,16 +13,22 @@ mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 mount -t tmpfs tmpfs /run 2>/dev/null || true
 mount -t tmpfs tmpfs /var/run 2>/dev/null || true
-mount -t tmpfs tmpfs /bkupgrade 2>/dev/null || true
 
-# Optional persistent /data: quasar.data=persist mounts a spare virtio disk
-# (ext4) instead of tmpfs, so an installed stack survives a guest reboot.
+# Optional persistent /data:
+# - quasar.data=persist mounts a spare virtio disk (ext4) onto /data (or its symlink target)
+# - quasar.data=rootfs keeps /data and /bkupgrade on the root ext4 filesystem (when -snapshot is off)
+# - quasar.data=tmpfs (default) mounts /data and /bkupgrade in RAM
 DATA_MODE="tmpfs"
 for arg in $(cat /proc/cmdline); do
   case "$arg" in
     quasar.data=*) DATA_MODE="${arg#quasar.data=}" ;;
   esac
 done
+
+if [ "$DATA_MODE" != "rootfs" ]; then
+  mount -t tmpfs tmpfs /bkupgrade 2>/dev/null || true
+fi
+
 DATA_MOUNTED=0
 # Some images ship /data as a symlink (e.g. -> /bkupgrade/data), so resolve it
 # and mount the persistent disk on the real directory. `readlink -f` cannot be
@@ -38,6 +44,7 @@ if [ -L /data ]; then
     ""|/) DATA_TARGET=/data ;;
   esac
 fi
+
 if [ "$DATA_MODE" = "persist" ]; then
   mkdir -p "$DATA_TARGET" 2>/dev/null || true
   # virtio-blk disks can appear a moment after the root device; retry briefly.
@@ -51,9 +58,15 @@ if [ "$DATA_MODE" = "persist" ]; then
     _i=$((_i + 1))
     sleep 1
   done
+  echo "data-persist target=$DATA_TARGET mounted=$DATA_MOUNTED tries=$_i" > /tmp/data-mount.log 2>/dev/null || true
+elif [ "$DATA_MODE" = "rootfs" ]; then
+  mkdir -p "$DATA_TARGET" 2>/dev/null || true
+  DATA_MOUNTED=1
+  echo "data-rootfs target=$DATA_TARGET mounted=1" > /tmp/data-mount.log 2>/dev/null || true
 fi
-[ "$DATA_MODE" = "persist" ] && echo "data-persist target=$DATA_TARGET mounted=$DATA_MOUNTED tries=$_i" > /tmp/data-mount.log 2>/dev/null || true
+
 if [ "$DATA_MOUNTED" != "1" ]; then
+  mkdir -p "$DATA_TARGET" 2>/dev/null || true
   mount -t tmpfs tmpfs "$DATA_TARGET" 2>/dev/null || true
 fi
 mount -t tmpfs tmpfs /sys 2>/dev/null || true
@@ -73,6 +86,12 @@ for arg in $(cat /proc/cmdline); do
 done
 
 if [ "$BOARD" = "auto" ] || [ -z "$BOARD" ]; then
+  if [ -s /etc/quasar-board ]; then
+    BOARD=$(head -n 1 /etc/quasar-board 2>/dev/null | tr -d '\r\n ')
+  fi
+fi
+
+if [ "$BOARD" = "auto" ] || [ -z "$BOARD" ]; then
   DEV_TYPE=""
   if [ -f /system/vendor/quasar/quasar.cfg ]; then
     DEV_TYPE=$(sed -n 's/.*"deviceType"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /system/vendor/quasar/quasar.cfg 2>/dev/null | head -n 1)
@@ -81,7 +100,20 @@ if [ "$BOARD" = "auto" ] || [ -z "$BOARD" ]; then
     fi
   fi
   case "$DEV_TYPE" in
-    yandexmini_2|mini2) BOARD="yandexmini2" ;;
+    yandexmini_2|mini2)
+      if grep -q '4794659041' /system/vendor/quasar/quasar.cfg 2>/dev/null; then
+        BOARD="yandexmini2nc"
+      else
+        BOARD="yandexmini2"
+      fi
+      ;;
+    plum)
+      if grep -q '4794654278' /system/vendor/quasar/quasar.cfg 2>/dev/null; then
+        BOARD="plumnc"
+      else
+        BOARD="plum"
+      fi
+      ;;
     station_2|station-midi|yandexmidi) BOARD="station2" ;;
     "")
       if [ -e /etc/init.d/S61leds_brightness ]; then
@@ -99,15 +131,17 @@ if [ "$BOARD" = "auto" ] || [ -z "$BOARD" ]; then
 fi
 
 case "$BOARD" in
-  mini2|yandexmini_2) BOARD="yandexmini2" ;;
-  mini3)              BOARD="bergamot" ;;
-  mini3pro)           BOARD="pickle" ;;
-  lite2)              BOARD="plum" ;;
-  lite1|micro)        BOARD="yandexmicro" ;;
-  station3)           BOARD="orion" ;;
+  mini2|yandexmini_2)        BOARD="yandexmini2" ;;
+  mini2nc|yandexmini_2_nc)   BOARD="yandexmini2nc" ;;
+  mini3)                     BOARD="bergamot" ;;
+  mini3pro)                  BOARD="pickle" ;;
+  lite2)                     BOARD="plum" ;;
+  prune|lite2nc|plumnc)      BOARD="plumnc" ;;
+  lite1|micro)               BOARD="yandexmicro" ;;
+  station3)                  BOARD="orion" ;;
   station_2|station-midi|yandexmidi) BOARD="station2" ;;
-  street)             BOARD="mango" ;;
-  hub)                BOARD="saturn" ;;
+  street)                    BOARD="mango" ;;
+  hub)                       BOARD="saturn" ;;
 esac
 
 export QUASAR_BOARD="$BOARD"
@@ -347,8 +381,8 @@ else
   esac
   echo 255 > /sys/class/backlight/fb0/brightness
   echo 255 > /sys/class/backlight/fb1/brightness
-  [ -e /dev/fb0 ] || dd if=/dev/zero of=/dev/fb0 bs=192 count=1 2>/dev/null || true
-  [ -e /dev/fb1 ] || dd if=/dev/zero of=/dev/fb1 bs=192 count=1 2>/dev/null || true
+  [ -e /dev/fb0 ] || dd if=/dev/zero of=/dev/fb0 bs=264 count=1 2>/dev/null || true
+  [ -e /dev/fb1 ] || dd if=/dev/zero of=/dev/fb1 bs=264 count=1 2>/dev/null || true
 fi
 
 if [ "$LED_DRIVER" != "i2c_sn3236" ]; then
@@ -425,6 +459,13 @@ if [ "$LED_DRIVER" != "i2c_sn3236" ]; then
     ln -sfn "${SYSFS_PREFIX}:white:clock-p3" "/sys/class/leds/${SYSFS_PREFIX}:white:clockPLUS1"
     ln -sfn "${SYSFS_PREFIX}:white:clock-q3" "/sys/class/leds/${SYSFS_PREFIX}:white:clockPLUS2"
     ln -sfn "${SYSFS_PREFIX}:white:clock-m1" "/sys/class/leds/${SYSFS_PREFIX}:white:clockMINUS"
+    ln -sfn "${SYSFS_PREFIX}:white:clock-p3" "/sys/class/leds/${SYSFS_PREFIX}:white:clockDH"
+    ln -sfn "${SYSFS_PREFIX}:white:clock-q3" "/sys/class/leds/${SYSFS_PREFIX}:white:clockDL"
+    ln -sfn "${SYSFS_PREFIX}:white:clock-m1" "/sys/class/leds/${SYSFS_PREFIX}:white:clockDM"
+    for part in a b c d e f g; do
+      up=$(echo "$part" | tr 'a-g' 'A-G')
+      ln -sfn "${SYSFS_PREFIX}:white:clock-${part}1" "/sys/class/leds/${SYSFS_PREFIX}:white:clock${up}0"
+    done
   fi
 fi
 
@@ -590,7 +631,14 @@ fi
 
 echo "=== [Quasar QEMU Emulator] Booting board=$BOARD maind_mode=$MODE ==="
 
-# 9. Start Virtual Speaker Twin & Hardware Bridge (:8091)
+# 9. Start native Quasar maind stack first when maind_mode=full (otherwise qemu-hw-bridge runs the autonomous IPC/TTS stub)
+if [ "$MODE" = "full" ] && [ -x /system/vendor/quasar/onboot.sh ]; then
+  echo "=== Starting native Quasar maind stack (/system/vendor/quasar/onboot.sh start) ==="
+  /system/vendor/quasar/onboot.sh start >/tmp/quasar-onboot.log 2>&1 &
+  sleep 0.4
+fi
+
+# 10. Start Virtual Speaker Twin & Hardware Bridge (:8091)
 # If host passed an updated qemu-hw-bridge binary via second virtio drive (/dev/vdb), hot-update it before launch
 if [ -b /dev/vdb ] && [ "$(dd if=/dev/vdb bs=4 count=1 2>/dev/null)" = "$(printf '\177ELF')" ]; then
   cat /dev/vdb > /usr/local/bin/qemu-hw-bridge 2>/dev/null || true
@@ -598,12 +646,6 @@ if [ -b /dev/vdb ] && [ "$(dd if=/dev/vdb bs=4 count=1 2>/dev/null)" = "$(printf
 fi
 /usr/local/bin/qemu-hw-bridge >/tmp/hw-bridge.log 2>&1 &
 sleep 0.4
-
-# 10. Start native Quasar maind stack only when maind_mode=full (otherwise qemu-hw-bridge runs the lightweight IPC/log stub)
-if [ "$MODE" = "full" ] && [ -x /system/vendor/quasar/onboot.sh ]; then
-  echo "=== Starting native Quasar maind stack (/system/vendor/quasar/onboot.sh start) ==="
-  /system/vendor/quasar/onboot.sh start >/tmp/quasar-onboot.log 2>&1 &
-fi
 
 # 11. Run any user-installed /etc/init.d/S99* startup scripts (skipping firmware S99onboot.sh / S99zdropbear)
 for s in /etc/init.d/S99*; do

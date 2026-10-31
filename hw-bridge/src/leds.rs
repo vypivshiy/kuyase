@@ -26,6 +26,18 @@ pub fn parse_led_pattern_str(raw: &str, ring_leds: usize) -> Vec<(Vec<[u8; 3]>, 
                         (rgb & 0xff) as u8,
                     ]);
                 }
+            } else if tok.len() == 8 {
+                if let Ok(rgbw) = u32::from_str_radix(tok, 16) {
+                    let r = ((rgbw >> 24) & 0xff) as u8;
+                    let g = ((rgbw >> 16) & 0xff) as u8;
+                    let b = ((rgbw >> 8) & 0xff) as u8;
+                    let w = (rgbw & 0xff) as u8;
+                    parsed.push([
+                        r.saturating_add(w / 2),
+                        g.saturating_add(w / 2),
+                        b.saturating_add(w / 2),
+                    ]);
+                }
             }
         }
         if !parsed.is_empty() && ring_leds > 0 {
@@ -42,9 +54,11 @@ pub fn parse_led_pattern_str(raw: &str, ring_leds: usize) -> Vec<(Vec<[u8; 3]>, 
 pub fn load_led_pattern(kind: &str, ring_leds: usize) -> Vec<(Vec<[u8; 3]>, u32)> {
     let candidates = [
         format!("/system/vendor/quasar/ledpatterns/ring/{}.led", kind),
+        format!("/system/vendor/quasar/ledpatterns/panel/{}.led", kind),
         format!("/system/vendor/quasar/ledpatterns/oknix/{}.led", kind),
         format!("/system/vendor/quasar/ledpatterns/{}.led", kind),
         format!("/system/vendor/quasar/ledpatterns/ring/alice_{}.led", kind),
+        format!("/system/vendor/quasar/ledpatterns/panel/alice_{}.led", kind),
         format!("/system/vendor/quasar/ledpatterns/oknix/alice_{}.led", kind),
         format!("/system/vendor/quasar/ledpatterns/alice_{}.led", kind),
         format!("/system/vendor/quasar/ledpatterns/alice_pro_{}.led", kind),
@@ -108,7 +122,15 @@ pub fn build_volume_led_frame(
     let clamped = vol_level.min(10);
     if !volume_frames.is_empty() {
         let idx = ((clamped as usize) * (volume_frames.len() - 1)) / 10;
-        return volume_frames[idx].0.clone();
+        let frame = &volume_frames[idx].0;
+        if clamped == 0
+            || frame
+                .first()
+                .map(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+                .unwrap_or(false)
+        {
+            return frame.clone();
+        }
     }
     let lit = ((clamped as usize) * ring_leds).div_ceil(10);
     let color = match clamped {
@@ -125,15 +147,93 @@ pub fn build_volume_led_frame(
     px
 }
 
+pub fn parse_rgb_hex_pattern(forced: &str) -> Option<[u8; 3]> {
+    let hex = forced.strip_prefix("rgb:")?;
+    let clean = hex.trim_start_matches('#');
+    let rgb = u32::from_str_radix(clean, 16).unwrap_or(0);
+    Some([
+        ((rgb >> 16) & 0xff) as u8,
+        ((rgb >> 8) & 0xff) as u8,
+        (rgb & 0xff) as u8,
+    ])
+}
+
 fn apply_native_frames(state: &BridgeState, ring_px: Vec<[u8; 3]>, aux_px: Option<Vec<[u8; 3]>>) {
     state.peripherals.ring.write_native_frame(&ring_px);
     *state.native_led_frame.lock().unwrap() = ring_px;
 
     let aux_zones = state.peripherals.aux_light.zone_count();
     if aux_zones > 0 {
-        let zones = aux_px.unwrap_or_else(|| vec![[0u8; 3]; aux_zones]);
-        state.peripherals.aux_light.write_native_frame(&zones);
-        *state.native_aux_frame.lock().unwrap() = zones;
+        if let Some(zones) = aux_px {
+            state.peripherals.aux_light.write_native_frame(&zones);
+            *state.native_aux_frame.lock().unwrap() = zones;
+        } else {
+            *state.native_aux_frame.lock().unwrap() = vec![[0u8; 3]; aux_zones];
+        }
+    }
+}
+
+pub fn sync_immediate_led_state(state: &BridgeState) {
+    let ring_leds = state.ring_leds;
+    let aux_zones = state.peripherals.aux_light.zone_count();
+    let now = now_millis();
+    let vol_until = state.volume_overlay_until_ms.load(Ordering::Relaxed);
+    let forced = state.forced_led_pattern.lock().unwrap().clone();
+
+    if now < vol_until {
+        let lvl = state.volume_level.load(Ordering::Relaxed);
+        let volume_frames = load_led_pattern("volume", ring_leds);
+        let px = build_volume_led_frame(&volume_frames, lvl, ring_leds);
+        apply_native_frames(state, px, None);
+        state.peripherals.front_display.render_volume_overlay(lvl, true);
+        return;
+    }
+
+    if !forced.is_empty() {
+        if let Some(c) = parse_rgb_hex_pattern(&forced) {
+            let aux = if aux_zones > 0 {
+                Some(vec![c; aux_zones])
+            } else {
+                None
+            };
+            apply_native_frames(state, vec![c; ring_leds], aux);
+            return;
+        }
+        let frames = load_led_pattern(&forced, ring_leds);
+        if let Some((px, _)) = frames.first() {
+            apply_native_frames(state, px.clone(), None);
+        }
+        return;
+    }
+
+    if state.full_mode {
+        *state.native_led_frame.lock().unwrap() = vec![[0u8; 3]; ring_leds];
+        if aux_zones > 0 {
+            *state.native_aux_frame.lock().unwrap() = vec![[0u8; 3]; aux_zones];
+        }
+        return;
+    }
+
+    if state.mics_muted.load(Ordering::Relaxed) {
+        let mute_frames = load_led_pattern("mute_mics", ring_leds);
+        let (ref px, _) = mute_frames[0];
+        let aux = if aux_zones > 0 {
+            Some(vec![[180, 0, 0]; aux_zones])
+        } else {
+            None
+        };
+        apply_native_frames(state, px.clone(), aux);
+        return;
+    }
+
+    if state.alice_state() == AliceState::Idle && state.forced_led_pattern.lock().unwrap().is_empty()
+    {
+        let aux = if aux_zones > 0 {
+            Some(vec![[0u8; 3]; aux_zones])
+        } else {
+            None
+        };
+        apply_native_frames(state, vec![[0u8; 3]; ring_leds], aux);
     }
 }
 
@@ -176,14 +276,7 @@ pub fn spawn_native_led_animator(state: Arc<BridgeState>) {
             // 2. Ручной выбор паттерна / цвета из UI
             if !forced.is_empty() {
                 was_active = true;
-                if let Some(hex) = forced.strip_prefix("rgb:") {
-                    let clean = hex.trim_start_matches('#');
-                    let rgb = u32::from_str_radix(clean, 16).unwrap_or(0);
-                    let c = [
-                        ((rgb >> 16) & 0xff) as u8,
-                        ((rgb >> 8) & 0xff) as u8,
-                        (rgb & 0xff) as u8,
-                    ];
+                if let Some(c) = parse_rgb_hex_pattern(&forced) {
                     let aux = if aux_zones > 0 {
                         Some(vec![c; aux_zones])
                     } else {
@@ -214,6 +307,19 @@ pub fn spawn_native_led_animator(state: Arc<BridgeState>) {
                 apply_native_frames(&state, px.clone(), aux);
                 frame_idx = frame_idx.wrapping_add(1);
                 thread::sleep(Duration::from_millis(dur_ms as u64));
+                continue;
+            }
+
+            if state.full_mode {
+                if was_active {
+                    was_active = false;
+                    frame_idx = 0;
+                    *state.native_led_frame.lock().unwrap() = vec![[0u8; 3]; ring_leds];
+                    if aux_zones > 0 {
+                        *state.native_aux_frame.lock().unwrap() = vec![[0u8; 3]; aux_zones];
+                    }
+                }
+                thread::sleep(Duration::from_millis(80));
                 continue;
             }
 
@@ -258,7 +364,12 @@ pub fn spawn_native_led_animator(state: Arc<BridgeState>) {
             if was_active {
                 was_active = false;
                 frame_idx = 0;
-                apply_native_frames(&state, vec![[0u8; 3]; ring_leds], None);
+                let aux = if aux_zones > 0 {
+                    Some(vec![[0u8; 3]; aux_zones])
+                } else {
+                    None
+                };
+                apply_native_frames(&state, vec![[0u8; 3]; ring_leds], aux);
             }
             thread::sleep(Duration::from_millis(40));
         }
@@ -279,6 +390,13 @@ mod tests {
         assert_eq!(frames[0].1, 20);
         assert_eq!(frames[1].0[0], [0x00, 0xff, 0x80]);
         assert_eq!(frames[1].1, 35);
+
+        let rgbw_sample = "710ccc00 009f0020 20\n";
+        let rgbw_frames = parse_led_pattern_str(rgbw_sample, 88);
+        assert_eq!(rgbw_frames.len(), 1);
+        assert_eq!(rgbw_frames[0].0.len(), 88);
+        assert_eq!(rgbw_frames[0].0[0], [0x71, 0x0c, 0xcc]);
+        assert_eq!(rgbw_frames[0].0[1], [0x10, 0xaf, 0x10]);
     }
 
     #[test]
@@ -291,5 +409,12 @@ mod tests {
         assert_eq!(px5[3], [0, 0, 0]);
         let px10 = build_volume_led_frame(&[], 10, 6);
         assert_eq!(px10, vec![[225, 0, 0]; 6]);
+    }
+
+    #[test]
+    fn test_parse_rgb_hex_pattern() {
+        assert_eq!(parse_rgb_hex_pattern("rgb:#00E5FF"), Some([0x00, 0xE5, 0xFF]));
+        assert_eq!(parse_rgb_hex_pattern("rgb:ff1020"), Some([0xFF, 0x10, 0x20]));
+        assert_eq!(parse_rgb_hex_pattern("listening"), None);
     }
 }

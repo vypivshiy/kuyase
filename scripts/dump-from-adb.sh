@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# К.У.Я.С.Э. (KUYASE) — Снятие безопасного системного дампа колонки по сетевому ADB (Linux / macOS / WSL)
+# КУЯСЭ (KUYASE) — Автономное снятие системного дампа колонки по сетевому ADB (Linux / macOS / WSL)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,34 +75,44 @@ MODEL_RAW="$(adb_cmd shell "cat /proc/device-tree/compatible /proc/device-tree/m
 DEV_TYPE_CFG="$(adb_cmd shell 'sed -n "s/.*\"deviceType\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" /system/vendor/quasar/quasar.cfg 2>/dev/null | head -n 1' | tr -d '\r\n ')"
 
 SLUG="unknown"
-case "${DEV_TYPE_CFG}" in
-  cucumber)                       SLUG="cucumber" ;;
-  bergamot|mini3)                 SLUG="bergamot" ;;
-  pickle|mini3pro)                SLUG="pickle" ;;
-  orion|station3)                 SLUG="orion" ;;
-  plum|lite2)                     SLUG="plum" ;;
-  mango|street)                   SLUG="mango" ;;
-  saturn|hub)                     SLUG="saturn" ;;
-  station_2|station-midi|yandexmidi|station2) SLUG="station2" ;;
-  yandexmini_2|mini2|yandexmini2) SLUG="yandexmini2" ;;
-  yandexmicro|lite1|micro)        SLUG="yandexmicro" ;;
-  yandexmini|mini1)               SLUG="yandexmini" ;;
-  ?*)                             SLUG="${DEV_TYPE_CFG}" ;;
+case "${MODEL_RAW}" in
+  *prune*) SLUG="plumnc" ;;
 esac
 
 if [ "${SLUG}" = "unknown" ]; then
+  case "${DEV_TYPE_CFG}" in
+    cucumber)                                    SLUG="cucumber" ;;
+    bergamot|mini3)                              SLUG="bergamot" ;;
+    pickle|mini3pro)                             SLUG="pickle" ;;
+    orion|station3)                              SLUG="orion" ;;
+    plumnc|prune|lite2nc)                        SLUG="plumnc" ;;
+    plum|lite2)                                  SLUG="plum" ;;
+    mango|street)                                SLUG="mango" ;;
+    saturn|hub)                                  SLUG="saturn" ;;
+    station_2|station-midi|yandexmidi|station2)  SLUG="station2" ;;
+    yandexmini_2_no_clock|yandexmini2nc|mini2nc) SLUG="yandexmini2nc" ;;
+    yandexmini_2|mini2|yandexmini2)              SLUG="yandexmini2" ;;
+    yandexmicro|lite1|micro)                     SLUG="yandexmicro" ;;
+    yandexmini|mini1)                            SLUG="yandexmini" ;;
+    ?*)                                          SLUG="${DEV_TYPE_CFG}" ;;
+  esac
+fi
+
+if [ "${SLUG}" = "unknown" ]; then
   case "${MODEL_RAW}" in
-    *cucumber*)     SLUG="cucumber" ;;
-    *bergamot*)     SLUG="bergamot" ;;
-    *pickle*)       SLUG="pickle" ;;
-    *orion*)        SLUG="orion" ;;
-    *plum*)         SLUG="plum" ;;
-    *mango*)        SLUG="mango" ;;
-    *saturn*)       SLUG="saturn" ;;
-    *station-midi*) SLUG="station2" ;;
-    *yandexmini_2*|*mini2*) SLUG="yandexmini2" ;;
-    *yandexmicro*)  SLUG="yandexmicro" ;;
-    *axg*)          SLUG="yandexmini" ;;
+    *cucumber*)               SLUG="cucumber" ;;
+    *bergamot*)               SLUG="bergamot" ;;
+    *pickle*)                 SLUG="pickle" ;;
+    *orion*)                  SLUG="orion" ;;
+    *prune*)                  SLUG="plumnc" ;;
+    *plum*)                   SLUG="plum" ;;
+    *mango*)                  SLUG="mango" ;;
+    *saturn*)                 SLUG="saturn" ;;
+    *station-midi*)           SLUG="station2" ;;
+    *yandexmini2nc*|*mini2nc*) SLUG="yandexmini2nc" ;;
+    *yandexmini_2*|*mini2*)   SLUG="yandexmini2" ;;
+    *yandexmicro*)            SLUG="yandexmicro" ;;
+    *axg*)                    SLUG="yandexmini" ;;
   esac
 fi
 
@@ -158,7 +168,4 @@ adb_cmd shell "rm -f ${SCRATCH_PATH}"
 echo "=================================================================="
 echo " Дамп успешно сохранён в: ${OUT_DIR}"
 ls -lh "${OUT_DIR}"
-echo ""
-echo " Собрать образ .ext4 и запустить эмулятор:"
-echo "   ./scripts/run-qemu.sh --dump \"${OUT_DIR}\""
 echo "=================================================================="

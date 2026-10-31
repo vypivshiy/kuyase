@@ -2,15 +2,9 @@
 name = "qemu-hw-bridge"
 version = "1.0.0"
 edition = "2021"
-description = "In-QEMU Virtual Hardware Bridge, LED/Clock/Audio Tap, uinput Injector, and 2D Schematic Visualizer (:8091)"
+description = "In-QEMU Virtual Hardware Bridge, LED/Clock/Audio Tap, uinput Injector, and Duplex Stream Server (:8091)"
 
 [dependencies]
+protocol = { path = "../protocol" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-strip = true
-panic = "abort"
