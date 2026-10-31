@@ -15,8 +15,8 @@ mount -t tmpfs tmpfs /run 2>/dev/null || true
 mount -t tmpfs tmpfs /var/run 2>/dev/null || true
 mount -t tmpfs tmpfs /bkupgrade 2>/dev/null || true
 
-# Optional persistent /data: pass quasar.data=persist on the kernel cmdline to
-# mount an ext4 data disk (any of /dev/vdc,/dev/vdb,/dev/vdd) instead of tmpfs.
+# Optional persistent /data: quasar.data=persist mounts a spare virtio disk
+# (ext4) instead of tmpfs, so an installed stack survives a guest reboot.
 DATA_MODE="tmpfs"
 for arg in $(cat /proc/cmdline); do
   case "$arg" in
@@ -24,22 +24,37 @@ for arg in $(cat /proc/cmdline); do
   esac
 done
 DATA_MOUNTED=0
-if [ "$DATA_MODE" = "persist" ] && [ ! -L /data ]; then
+# Some images ship /data as a symlink (e.g. -> /bkupgrade/data), so resolve it
+# and mount the persistent disk on the real directory. `readlink -f` cannot be
+# used: the target may not exist yet.
+DATA_TARGET=/data
+if [ -L /data ]; then
+  _link=$(readlink /data 2>/dev/null || true)
+  case "$_link" in
+    /*) DATA_TARGET="$_link" ;;
+    ?*) DATA_TARGET="/bkupgrade/$_link" ;;
+  esac
+  case "$DATA_TARGET" in
+    ""|/) DATA_TARGET=/data ;;
+  esac
+fi
+if [ "$DATA_MODE" = "persist" ]; then
+  mkdir -p "$DATA_TARGET" 2>/dev/null || true
   # virtio-blk disks can appear a moment after the root device; retry briefly.
   _i=0
   while [ "$_i" -lt 15 ] && [ "$DATA_MOUNTED" != "1" ]; do
     for dev in /dev/vdc /dev/vdb /dev/vdd; do
       [ -b "$dev" ] || continue
-      if mount -t ext4 "$dev" /data 2>/dev/null; then DATA_MOUNTED=1; break; fi
+      if mount -t ext4 "$dev" "$DATA_TARGET" 2>/dev/null; then DATA_MOUNTED=1; break; fi
     done
     [ "$DATA_MOUNTED" = "1" ] && break
     _i=$((_i + 1))
     sleep 1
   done
 fi
-[ "$DATA_MODE" = "persist" ] && echo "data-persist mounted=$DATA_MOUNTED tries=$_i" > /tmp/data-mount.log 2>/dev/null || true
-if [ "$DATA_MOUNTED" != "1" ] && [ ! -L /data ]; then
-  mount -t tmpfs tmpfs /data 2>/dev/null || true
+[ "$DATA_MODE" = "persist" ] && echo "data-persist target=$DATA_TARGET mounted=$DATA_MOUNTED tries=$_i" > /tmp/data-mount.log 2>/dev/null || true
+if [ "$DATA_MOUNTED" != "1" ]; then
+  mount -t tmpfs tmpfs "$DATA_TARGET" 2>/dev/null || true
 fi
 mount -t tmpfs tmpfs /sys 2>/dev/null || true
 
@@ -479,6 +494,20 @@ cat > /etc/asound.conf << 'EOF'
 pcm.dmixer {
   type dmix
   ipc_key 1024
+  ipc_perm 0666
+  slave {
+    pcm "hw:0,0,0"
+    rate 48000
+    channels 2
+    format S16_LE
+    period_size 1024
+    buffer_size 8192
+  }
+}
+
+pcm.dmix_spk {
+  type dmix
+  ipc_key 2048
   ipc_perm 0666
   slave {
     pcm "hw:0,0,0"
