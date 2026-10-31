@@ -334,6 +334,11 @@ inject_guest_tools() {
   mkdir -p /tmp/mnt-prep/usr/local/bin
   cp -f "${INIT_SH}" /tmp/mnt-prep/quasar-qemu-init.sh
   cp -f "${BRIDGE_BIN}" /tmp/mnt-prep/usr/local/bin/qemu-hw-bridge
+  if [ -f "${REPO_ROOT}/guest-init/S99kuyase-yam" ]; then
+    mkdir -p /tmp/mnt-prep/etc/init.d
+    cp -f "${REPO_ROOT}/guest-init/S99kuyase-yam" /tmp/mnt-prep/etc/init.d/S99kuyase-yam
+    chmod 0755 /tmp/mnt-prep/etc/init.d/S99kuyase-yam
+  fi
   chmod 0755 /tmp/mnt-prep/quasar-qemu-init.sh /tmp/mnt-prep/usr/local/bin/qemu-hw-bridge
   chmod 0755 /tmp/mnt-prep/bin/busybox /tmp/mnt-prep/lib/ld-* /tmp/mnt-prep/usr/bin/* /tmp/mnt-prep/sbin/* /tmp/mnt-prep/system/vendor/quasar/maind /tmp/mnt-prep/system/vendor/quasar/*.sh /tmp/mnt-prep/system/workdir/bin/* 2>/dev/null || true
 
