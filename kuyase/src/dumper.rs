@@ -30,12 +30,16 @@ pub struct DumpResult {
 }
 
 pub fn detect_board_slug_from_probe(dev_type_cfg: &str, model_raw: &str) -> String {
+    let model_lc = model_raw.to_ascii_lowercase();
+    if model_lc.contains("prune") {
+        return "plumnc".to_string();
+    }
+
     let dev = dev_type_cfg.trim();
     if !dev.is_empty() && !dev.eq_ignore_ascii_case("unknown") {
         return normalize_board_slug(dev);
     }
 
-    let model_lc = model_raw.to_ascii_lowercase();
     if model_lc.contains("cucumber") {
         "cucumber".to_string()
     } else if model_lc.contains("bergamot") {
@@ -52,6 +56,8 @@ pub fn detect_board_slug_from_probe(dev_type_cfg: &str, model_raw: &str) -> Stri
         "saturn".to_string()
     } else if model_lc.contains("station-midi") {
         "station2".to_string()
+    } else if model_lc.contains("yandexmini2nc") || model_lc.contains("mini2nc") {
+        "yandexmini2nc".to_string()
     } else if model_lc.contains("yandexmini_2") || model_lc.contains("mini2") {
         "yandexmini2".to_string()
     } else if model_lc.contains("yandexmicro") {
@@ -267,6 +273,18 @@ mod tests {
     #[test]
     fn test_detect_board_slug_from_probe() {
         assert_eq!(detect_board_slug_from_probe("mini2", ""), "yandexmini2");
+        assert_eq!(
+            detect_board_slug_from_probe("plum", "yandex,prune-evt2 yandex,prune"),
+            "plumnc"
+        );
+        assert_eq!(
+            detect_board_slug_from_probe("plum", "yandex,plum-evt2 yandex,plum"),
+            "plum"
+        );
+        assert_eq!(
+            detect_board_slug_from_probe("yandexmidi", "yandex,station-midi"),
+            "station2"
+        );
         assert_eq!(
             detect_board_slug_from_probe("station3", "yandex,orion"),
             "orion"

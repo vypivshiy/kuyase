@@ -1,6 +1,6 @@
 use crate::archive_formats::{
-    extract_squashfs_into_tree, extract_ubi_into_tree, extract_ubifs_into_tree, SQUASHFS_MAGIC,
-    UBIFS_NODE_MAGIC, UBI_EC_MAGIC,
+    extract_payload_bytes_into_tree, extract_squashfs_into_tree, extract_ubi_into_tree,
+    extract_ubifs_into_tree, SQUASHFS_MAGIC, UBIFS_NODE_MAGIC, UBI_EC_MAGIC,
 };
 use crate::ext_fs::{read_ext2_image, write_ext2_image, EXT2_SUPER_MAGIC};
 use crate::session::{resolve_bridge_binary, EMBEDDED_HW_BRIDGE};
@@ -177,6 +177,36 @@ pub fn read_tar_from_reader<R: Read>(reader: R) -> Result<RootfsTree, String> {
             _ => {}
         }
     }
+
+    // If the tar archive wraps a single filesystem image (e.g., `plum-system.ext4` inside `plum-system.tar.gz`),
+    // automatically unpack the inner filesystem image into the RootfsTree.
+    if tree.entries.len() == 1 {
+        let (only_name, only_node) = tree.entries.iter().next().unwrap();
+        if let RootfsNodeKind::File(ref bytes) = only_node.kind {
+            if bytes.len() >= 2048 {
+                let inner_fname = Path::new(only_name)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(only_name.as_str());
+                let board_hint = detect_board_hint_from_filename(inner_fname);
+                if let Ok(mut inner_tree) = extract_payload_bytes_into_tree(bytes) {
+                    if !inner_tree.entries.is_empty() {
+                        if let Some(slug) = board_hint {
+                            if inner_tree.get("etc/quasar-board").is_none() {
+                                inner_tree.insert_file(
+                                    "etc/quasar-board",
+                                    format!("{}\n", slug).into_bytes(),
+                                    0o644,
+                                );
+                            }
+                        }
+                        return Ok(inner_tree);
+                    }
+                }
+            }
+        }
+    }
+
     Ok(tree)
 }
 
@@ -247,7 +277,61 @@ pub fn sanitize_tar_gz_file(path: &Path) -> Result<usize, String> {
     Ok(removed)
 }
 
+pub fn detect_board_hint_from_filename(name: &str) -> Option<String> {
+    let lower = name.trim().to_ascii_lowercase();
+    for suffix in [
+        "-system.tar.gz",
+        "-system.tgz",
+        "-system.tar",
+        "-system.ext4",
+        "-system-orig.ext4",
+        "-rootfs.tar.gz",
+        "-rootfs.tgz",
+    ] {
+        if let Some(prefix) = lower.strip_suffix(suffix) {
+            if !prefix.is_empty() {
+                return Some(normalize_board_slug(prefix));
+            }
+        }
+    }
+    if let Some(rest) = lower.strip_prefix("dump-") {
+        if let Some((slug_raw, _)) = rest.split_once('-') {
+            if !slug_raw.is_empty() {
+                return Some(normalize_board_slug(slug_raw));
+            }
+        } else if !rest.is_empty() {
+            return Some(normalize_board_slug(rest));
+        }
+    }
+    None
+}
+
+pub fn detect_board_hint_from_path(path: &Path) -> Option<String> {
+    if let Some(fname) = path.file_name().and_then(|s| s.to_str()) {
+        if let Some(slug) = detect_board_hint_from_filename(fname) {
+            return Some(slug);
+        }
+    }
+    if let Some(parent_name) = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+    {
+        if let Some(slug) = detect_board_hint_from_filename(parent_name) {
+            return Some(slug);
+        }
+    }
+    None
+}
+
 pub fn detect_board_from_tree(tree: &RootfsTree) -> String {
+    if let Some(board_bytes) = tree.get_file_bytes("etc/quasar-board") {
+        let slug = String::from_utf8_lossy(board_bytes).trim().to_string();
+        if !slug.is_empty() {
+            return normalize_board_slug(&slug);
+        }
+    }
+
     if let Some(cfg_bytes) = tree.get_file_bytes("system/vendor/quasar/quasar.cfg") {
         let text = String::from_utf8_lossy(cfg_bytes);
         if let Some(pos) = text.find("\"deviceType\"") {
@@ -258,7 +342,14 @@ pub fn detect_board_from_tree(tree: &RootfsTree) -> String {
                     if let Some(end_q) = stripped.find('"') {
                         let dev = stripped[..end_q].trim();
                         if !dev.is_empty() {
-                            return normalize_board_slug(dev);
+                            let slug = normalize_board_slug(dev);
+                            if slug == "plum" && text.contains("4794654278") {
+                                return "plumnc".to_string();
+                            }
+                            if slug == "yandexmini2" && text.contains("4794659041") {
+                                return "yandexmini2nc".to_string();
+                            }
+                            return slug;
                         }
                     }
                 }
@@ -301,10 +392,13 @@ pub fn sanitize_tree(tree: &mut RootfsTree) {
         "etc/hostapd_temp.conf",
         "etc/wifi/ap_name",
         "etc/shadow",
+        "etc/hosts.bak",
         "etc/dropbear",
         "etc/dhcpcd.exit-hook",
         "etc/unbound/unbound.conf.head",
         "etc/init.d/S99zdropbear",
+        "etc/init.d/S99z_airplay",
+        "etc/init.d/S99zz_jarvis",
         "etc/init.d/S99alinad",
         "etc/init.d/S100privacy",
         "etc/init.d/S89usbgadget",
@@ -566,6 +660,94 @@ pub fn inject_guest_files(root: &Path, tree: &mut RootfsTree) -> Result<(), Stri
     Ok(())
 }
 
+fn is_ignored_backup_entry(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with('.')
+        || lower == "readme.md"
+        || lower.starts_with("sha256sums")
+        || lower.ends_with(".patch")
+        || lower.ends_with(".txt")
+        || lower.ends_with(".md")
+        || lower.ends_with(".list.gz")
+        || lower.ends_with(".tar.zst")
+}
+
+fn is_single_dump_dir(dir: &Path) -> bool {
+    let single_markers = [
+        dir.join("rootfs.tar.gz"),
+        dir.join("system.img.gz"),
+        dir.join("system.img"),
+        dir.join("ubivol").join("ubi0_0_rootfs.img"),
+        dir.join("ubi0_0_rootfs.img"),
+        dir.join("mtd").join("mtd3_system.bin"),
+        dir.join("mtd3_system.bin"),
+        dir.join("system").join("vendor").join("quasar").join("quasar.cfg"),
+    ];
+    if single_markers.iter().any(|p| p.is_file()) {
+        return true;
+    }
+    let mut archive_count = 0usize;
+    let mut has_tgz = false;
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let Some(fname) = p.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if is_ignored_backup_entry(fname) {
+                continue;
+            }
+            let lc = fname.to_ascii_lowercase();
+            if lc.ends_with(".tgz") {
+                has_tgz = true;
+            }
+            if lc.ends_with(".tar.gz")
+                || lc.ends_with(".tgz")
+                || lc.ends_with(".ext4")
+                || lc.ends_with(".zip")
+            {
+                archive_count += 1;
+            }
+        }
+    }
+    has_tgz && archive_count <= 1
+}
+
+pub fn discover_firmware_dumps(root: &Path) -> Vec<(String, PathBuf)> {
+    let mut dumps = Vec::new();
+    let backups = root.join("backups");
+    let Ok(rd) = fs::read_dir(&backups) else {
+        return dumps;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if is_ignored_backup_entry(name) {
+            continue;
+        }
+        if p.is_dir() && !is_single_dump_dir(&p) {
+            if let Ok(sub_rd) = fs::read_dir(&p) {
+                for sub_e in sub_rd.flatten() {
+                    let sp = sub_e.path();
+                    let Some(sname) = sp.file_name().and_then(|s| s.to_str()) else {
+                        continue;
+                    };
+                    if is_ignored_backup_entry(sname) {
+                        continue;
+                    }
+                    dumps.push((format!("{}/{}", name, sname), sp));
+                }
+            }
+        } else {
+            dumps.push((name.to_string(), p));
+        }
+    }
+    dumps.sort_by(|a, b| a.0.cmp(&b.0));
+    dumps
+}
+
 pub fn build_guest_image_from_dump(
     root: &Path,
     requested_board: Option<&str>,
@@ -573,7 +755,8 @@ pub fn build_guest_image_from_dump(
     out_img_override: Option<&Path>,
 ) -> Result<(String, PathBuf), String> {
     let mut tree = load_dump_into_tree(dump_path)?;
-    let detected = detect_board_from_tree(&tree);
+    let detected = detect_board_hint_from_path(dump_path)
+        .unwrap_or_else(|| detect_board_from_tree(&tree));
     let board = match requested_board {
         Some(b) if !b.trim().is_empty() && !b.eq_ignore_ascii_case("auto") => {
             normalize_board_slug(b)
@@ -582,6 +765,11 @@ pub fn build_guest_image_from_dump(
     };
 
     inject_guest_files(root, &mut tree)?;
+    tree.insert_file(
+        "etc/quasar-board",
+        format!("{}\n", board).into_bytes(),
+        0o644,
+    );
 
     let work_dir = root.join("work");
     let _ = fs::create_dir_all(&work_dir);
@@ -622,6 +810,37 @@ pub fn prepare_images(
     dump_path: Option<&Path>,
 ) -> Result<Vec<(String, PathBuf)>, String> {
     if let Some(dp) = dump_path {
+        if dp.is_dir() && !is_single_dump_dir(dp) {
+            let mut built = Vec::new();
+            let req_slug = requested_board
+                .filter(|b| !b.trim().is_empty() && !b.eq_ignore_ascii_case("auto"))
+                .map(normalize_board_slug);
+            if let Ok(rd) = fs::read_dir(dp) {
+                let mut paths: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+                paths.sort();
+                for sp in paths {
+                    let Some(sname) = sp.file_name().and_then(|s| s.to_str()) else {
+                        continue;
+                    };
+                    if is_ignored_backup_entry(sname) {
+                        continue;
+                    }
+                    if let Some(ref target_slug) = req_slug {
+                        if let Some(hint) = detect_board_hint_from_path(&sp) {
+                            if &hint != target_slug {
+                                continue;
+                            }
+                        }
+                    }
+                    if let Ok(res) = build_guest_image_from_dump(root, req_slug.as_deref(), &sp, None) {
+                        built.push(res);
+                    }
+                }
+            }
+            if !built.is_empty() {
+                return Ok(built);
+            }
+        }
         let res = build_guest_image_from_dump(root, requested_board, dp, None)?;
         return Ok(vec![res]);
     }
@@ -632,6 +851,12 @@ pub fn prepare_images(
             return Ok(vec![res]);
         }
         let slug = normalize_board_slug(b);
+        for (_, dp) in discover_firmware_dumps(root) {
+            if detect_board_hint_from_path(&dp).as_deref() == Some(slug.as_str()) {
+                let res = build_guest_image_from_dump(root, Some(&slug), &dp, None)?;
+                return Ok(vec![res]);
+            }
+        }
         let existing = root.join("work").join(format!("{}-system.ext4", slug));
         if existing.is_file() {
             let res = build_guest_image_from_dump(root, Some(&slug), &existing, None)?;
@@ -640,16 +865,9 @@ pub fn prepare_images(
     }
 
     let mut built = Vec::new();
-    let backups_dir = root.join("backups");
-    if let Ok(entries) = fs::read_dir(&backups_dir) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.file_name().and_then(|s| s.to_str()) == Some("README.md") {
-                continue;
-            }
-            if let Ok(res) = build_guest_image_from_dump(root, requested_board, &p, None) {
-                built.push(res);
-            }
+    for (_, p) in discover_firmware_dumps(root) {
+        if let Ok(res) = build_guest_image_from_dump(root, requested_board, &p, None) {
+            built.push(res);
         }
     }
     if built.is_empty() {
@@ -747,6 +965,37 @@ mod tests {
             readback.get("bin/sh").unwrap().kind,
             RootfsNodeKind::Symlink("busybox".to_string())
         );
+        assert_eq!(
+            readback.get_file_bytes("etc/quasar-board").unwrap(),
+            b"yandexmini2\n"
+        );
+
+        // Verify tar.gz wrapping a single .ext4 image (like backups/kuyase-out/plumnc-system.tar.gz)
+        let mut inner_ext4_tree = RootfsTree::default();
+        inner_ext4_tree.insert_file(
+            "system/vendor/quasar/quasar.cfg",
+            br#"{"deviceType": "plum", "softwareVersion": "0.369.1.50.4794654278.20261021.133"}"#
+                .to_vec(),
+            0o644,
+        );
+        inner_ext4_tree.insert_file("etc/hosts.bak", b"127.0.0.1 localhost".to_vec(), 0o644);
+        let raw_ext4_path = temp_dir.join("plumnc-system.ext4");
+        write_ext2_image(&inner_ext4_tree, &raw_ext4_path, 4 * 1024 * 1024).unwrap();
+        let raw_ext4_bytes = fs::read(&raw_ext4_path).unwrap();
+
+        let mut wrapper_tar_tree = RootfsTree::default();
+        wrapper_tar_tree.insert_file("plumnc-system.ext4", raw_ext4_bytes, 0o644);
+        let wrapped_tar_gz = temp_dir.join("plumnc-system.tar.gz");
+        write_tree_to_tar_gz(&wrapper_tar_tree, &wrapped_tar_gz).unwrap();
+
+        let out_plumnc = temp_dir.join("work").join("plumnc-system.ext4");
+        let (plumnc_slug, _) =
+            build_guest_image_from_dump(&temp_dir, None, &wrapped_tar_gz, Some(&out_plumnc))
+                .unwrap();
+        assert_eq!(plumnc_slug, "plumnc");
+        let readback_plumnc = read_ext2_image(&out_plumnc).unwrap();
+        assert_eq!(detect_board_from_tree(&readback_plumnc), "plumnc");
+        assert!(readback_plumnc.get("etc/hosts.bak").is_none());
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

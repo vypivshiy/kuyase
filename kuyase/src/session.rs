@@ -269,6 +269,42 @@ pub struct EmulatorSession {
     serial_lines: Arc<Mutex<VecDeque<String>>>,
 }
 
+pub fn strip_ansi_and_control_chars(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            match chars.peek().copied() {
+                Some('[') => {
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' {
+                            break;
+                        }
+                    }
+                }
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            }
+            continue;
+        }
+        if ch == '\t' || ch >= ' ' {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 fn spawn_serial_reader<R: std::io::Read + Send + 'static>(
     stream: R,
     lines_ref: Arc<Mutex<VecDeque<String>>>,
@@ -284,7 +320,7 @@ fn spawn_serial_reader<R: std::io::Read + Send + 'static>(
             .open(log_path)
             .ok();
         for line in reader.lines().map_while(Result::ok) {
-            let clean = line.trim_end_matches('\r').to_string();
+            let clean = strip_ansi_and_control_chars(line.trim_end_matches('\r'));
             if let Some(ref mut f) = log_file {
                 let _ = writeln!(f, "{}{}", log_prefix, clean);
             }
@@ -320,7 +356,7 @@ impl EmulatorSession {
             Some(p) if p.is_file() => p.to_path_buf(),
             _ => resolve_kernel_image(&config.root_dir)?,
         };
-        let bridge_bin = resolve_bridge_binary(&config.root_dir)?;
+        let bridge_src = resolve_bridge_binary(&config.root_dir)?;
 
         if !config.drive_img.is_file() {
             return Err(format!(
@@ -331,6 +367,13 @@ impl EmulatorSession {
 
         let work_dir = config.root_dir.join("work");
         let _ = fs::create_dir_all(&work_dir);
+        let staged_bridge = work_dir.join(format!("qemu-hw-bridge-{}.bin", config.board));
+        let _ = fs::copy(&bridge_src, &staged_bridge);
+        let bridge_bin = if staged_bridge.is_file() {
+            staged_bridge
+        } else {
+            bridge_src
+        };
         let serial_log_path = work_dir.join(format!("{}-serial.log", config.board));
         let _ = File::create(&serial_log_path);
 
@@ -432,18 +475,40 @@ impl EmulatorSession {
         let Some(ref mut stdin) = *guard else {
             return Err("serial stdin is closed".to_string());
         };
-        stdin
-            .write_all(input.as_bytes())
-            .and_then(|_| stdin.flush())
-            .map_err(|e| format!("failed to write to serial stdin: {}", e))
+        // ARM PL011 UART (ttyAMA0) has a 16/32-byte hardware RX FIFO.
+        // Pace writes in 12-byte chunks so long one-liners never overflow the UART FIFO.
+        let bytes = input.as_bytes();
+        for (i, chunk) in bytes.chunks(12).enumerate() {
+            if i > 0 {
+                thread::sleep(Duration::from_millis(4));
+            }
+            stdin
+                .write_all(chunk)
+                .and_then(|_| stdin.flush())
+                .map_err(|e| format!("failed to write to serial stdin: {}", e))?;
+        }
+        Ok(())
     }
 
     pub fn clear_serial_lines(&self) {
         self.serial_lines.lock().unwrap().clear();
     }
 
+    pub fn append_serial_line(&self, line: impl Into<String>) {
+        let clean = strip_ansi_and_control_chars(&line.into());
+        let mut guard = self.serial_lines.lock().unwrap();
+        if guard.len() >= 2000 {
+            guard.pop_front();
+        }
+        guard.push_back(clean);
+    }
+
     pub fn serial_lines(&self) -> Vec<String> {
         self.serial_lines.lock().unwrap().iter().cloned().collect()
+    }
+
+    pub fn serial_lines_arc(&self) -> Arc<Mutex<VecDeque<String>>> {
+        self.serial_lines.clone()
     }
 
     pub fn is_running(&mut self) -> bool {

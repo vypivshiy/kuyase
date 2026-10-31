@@ -183,7 +183,7 @@ pub fn write_ext2_image(
 
     for g in 0..num_groups as usize {
         let base = (g as u32) * BLOCKS_PER_GROUP;
-        let meta_start = if g == 0 { 1 + gdt_blocks as u32 } else { base };
+        let meta_start = base + 1 + gdt_blocks as u32;
         bbm_blk[g] = meta_start;
         ibm_blk[g] = meta_start + 1;
         itable_blk[g] = meta_start + 2;

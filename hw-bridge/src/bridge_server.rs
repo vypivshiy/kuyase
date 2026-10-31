@@ -382,9 +382,15 @@ pub fn handle_host_command(state: &Arc<BridgeState>, cmd: HostCommand) -> GuestP
                     "down" => 4,
                     _ => 0,
                 };
+                let prev_tof = state.tof_mm.load(Ordering::Relaxed);
+                let restore_tof = if dir == "wave" || prev_tof == 140 {
+                    8190
+                } else {
+                    prev_tof
+                };
                 state.log(format!(
-                    "Inject ToF swipe gesture [{}] (140mm -> 8190mm)",
-                    dir
+                    "Inject ToF swipe gesture [{}] (140mm -> {}mm)",
+                    dir, restore_tof
                 ));
                 let st = state.clone();
                 thread::spawn(move || {
@@ -399,11 +405,16 @@ pub fn handle_host_command(state: &Arc<BridgeState>, cmd: HostCommand) -> GuestP
                     st.tof_mm.store(140, Ordering::SeqCst);
                     thread::sleep(Duration::from_millis(110));
                     if let Some(ref mut f) = *st.tof_uinput.lock().unwrap() {
-                        emit_compat_input_event(f, 3, 0x19, 4);
-                        emit_compat_input_event(f, 3, 0x12, 8190);
+                        emit_compat_input_event(
+                            f,
+                            3,
+                            0x19,
+                            if restore_tof < 500 { 0 } else { 4 },
+                        );
+                        emit_compat_input_event(f, 3, 0x12, restore_tof as i32);
                         emit_compat_input_event(f, 0, 0, 0);
                     }
-                    st.tof_mm.store(8190, Ordering::SeqCst);
+                    st.tof_mm.store(restore_tof, Ordering::SeqCst);
                 });
             } else if let Some(tof) = tof_mm {
                 let mm = tof as i32;

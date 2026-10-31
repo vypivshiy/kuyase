@@ -308,9 +308,11 @@ pub fn normalize_board_slug(raw: &str) -> String {
         "station-lite" | "lite" | "lite1" | "micro" | "yandexmicro" => "yandexmicro".to_string(),
         "mini" | "mini1" | "yandexmini" => "yandexmini".to_string(),
         "mini2" | "yandexmini_2" | "yandexmini2" => "yandexmini2".to_string(),
+        "mini2nc" | "yandexmini_2_nc" | "yandexmini2nc" => "yandexmini2nc".to_string(),
         "mini3" | "bergamot" => "bergamot".to_string(),
         "mini3pro" | "pickle" => "pickle".to_string(),
         "lite2" | "plum" => "plum".to_string(),
+        "prune" | "lite2nc" | "plumnc" => "plumnc".to_string(),
         "midi" | "cucumber" => "cucumber".to_string(),
         "station3" | "orion" => "orion".to_string(),
         "station_2" | "station-midi" | "yandexmidi" | "station2" => "station2".to_string(),
@@ -458,7 +460,11 @@ mod tests {
     fn test_normalize_board_slug() {
         assert_eq!(normalize_board_slug("mini1"), "yandexmini");
         assert_eq!(normalize_board_slug("mini2"), "yandexmini2");
+        assert_eq!(normalize_board_slug("mini2nc"), "yandexmini2nc");
         assert_eq!(normalize_board_slug("lite1"), "yandexmicro");
+        assert_eq!(normalize_board_slug("lite2"), "plum");
+        assert_eq!(normalize_board_slug("prune"), "plumnc");
+        assert_eq!(normalize_board_slug("station-midi"), "station2");
         assert_eq!(normalize_board_slug("midi"), "cucumber");
         assert_eq!(normalize_board_slug("station3"), "orion");
     }

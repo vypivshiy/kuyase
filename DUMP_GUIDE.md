@@ -25,7 +25,7 @@
 
 | Архитектура и модели | Формат дампа | Требуется на колонке (временно) | Размер на ПК (дампа / образа `.ext4`) |
 | :--- | :--- | :--- | :--- |
-| **32-bit `armhf` (NAND UBIFS)**<br>`yandexmini`, `yandexmini2`, `yandexmicro`, `plum`, `bergamot`, `station2`, `mango`, `saturn` | `rootfs.tar.gz`<br>`ubi0_0_rootfs.img`<br>`mtd3_system.bin` | **45 – 55 МиБ** (в ОЗУ `/tmp` или NAND `/bkupgrade`)<br>**72 – 76 МиБ** (в ОЗУ `/tmp`)<br>**80 – 128 МиБ** (в ОЗУ `/tmp`) | ~45–55 МиБ / **256 МиБ**<br>~72–76 МиБ / **256 МиБ**<br>~80–128 МиБ / **256 МиБ** |
+| **32-bit `armhf` (NAND UBIFS)**<br>`yandexmini`, `yandexmini2`, `yandexmini2nc`, `yandexmicro`, `plum`, `plumnc`, `station2`, `bergamot`, `mango`, `saturn` | `rootfs.tar.gz`<br>`ubi0_0_rootfs.img`<br>`mtd3_system.bin` | **45 – 55 МиБ** (в ОЗУ `/tmp` или NAND `/bkupgrade`)<br>**72 – 76 МиБ** (в ОЗУ `/tmp`)<br>**80 – 128 МиБ** (в ОЗУ `/tmp`) | ~45–55 МиБ / **256 МиБ**<br>~72–76 МиБ / **256 МиБ**<br>~80–128 МиБ / **256 МиБ** |
 | **64-bit `aarch64` (eMMC / NAND)**<br>`cucumber` (Миди), `orion` (Станция 3), `pickle` (Мини 3 Про) | `rootfs.tar.gz`<br>`system.img.gz`<br>`system.img` | **150 – 300 МиБ** (в `/data`, `/bkupgrade` или `/tmp`)<br>**150 – 300 МиБ** (в `/data`)<br>**512 – 1024 МиБ** (в `/data`) | ~150–300 МиБ / **1024 МиБ**<br>~150–300 МиБ / **1024 МиБ**<br>~1024 МиБ / **1024 МиБ** |
 
 >[!tip]

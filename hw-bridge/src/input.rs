@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -126,64 +126,29 @@ pub fn emit_compat_input_event(file: &mut File, ev_type: u16, code: u16, value: 
 pub fn spawn_serial_console_watcher() {
     thread::spawn(|| {
         thread::sleep(Duration::from_millis(600));
-        let Ok(mut tty) = OpenOptions::new().read(true).write(true).open("/dev/ttyAMA0") else {
-            return;
-        };
         let _ = Command::new("stty")
-            .args(["-F", "/dev/ttyAMA0", "raw", "-echo"])
+            .args(["-F", "/dev/ttyAMA0", "sane", "echo", "icrnl"])
             .status();
-        let _ = tty.write_all(
-            b"\r\n[Terminal] Press Ctrl+C or Ctrl+D to stop QEMU, or press Enter for root shell.\r\n",
-        );
-        let _ = tty.flush();
-
-        let mut b = [0u8; 1];
-        while let Ok(n) = tty.read(&mut b) {
-            if n == 0 {
-                thread::sleep(Duration::from_millis(100));
-                continue;
+        if let Ok(mut tty) = OpenOptions::new().write(true).open("/dev/ttyAMA0") {
+            let _ = tty.write_all(
+                b"\r\n=== [ttyAMA0] Root shell active (pure serial console, no ADB required) ===\r\n",
+            );
+            let _ = tty.flush();
+        }
+        loop {
+            if let (Ok(sin), Ok(sout), Ok(serr)) = (
+                OpenOptions::new().read(true).open("/dev/ttyAMA0"),
+                OpenOptions::new().write(true).open("/dev/ttyAMA0"),
+                OpenOptions::new().write(true).open("/dev/ttyAMA0"),
+            ) {
+                let _ = Command::new("/bin/sh")
+                    .arg("-i")
+                    .stdin(Stdio::from(sin))
+                    .stdout(Stdio::from(sout))
+                    .stderr(Stdio::from(serr))
+                    .status();
             }
-            match b[0] {
-                0x03 | 0x04 => {
-                    let _ = Command::new("stty")
-                        .args(["-F", "/dev/ttyAMA0", "sane"])
-                        .status();
-                    let _ = tty.write_all(
-                        b"\r\n=== [Quasar QEMU Emulator] Ctrl+C / Ctrl+D -> Shutting down VM... ===\r\n",
-                    );
-                    let _ = tty.flush();
-                    let _ = Command::new("poweroff").arg("-f").status();
-                    break;
-                }
-                b'\r' | b'\n' => {
-                    let _ = Command::new("stty")
-                        .args(["-F", "/dev/ttyAMA0", "sane", "echo", "icrnl"])
-                        .status();
-                    let _ = tty.write_all(
-                        b"\r\n=== Root shell active (type 'exit' or press Ctrl+D to shut down QEMU) ===\r\n",
-                    );
-                    let _ = tty.flush();
-                    if let (Ok(sin), Ok(sout), Ok(serr)) = (
-                        OpenOptions::new().read(true).open("/dev/ttyAMA0"),
-                        OpenOptions::new().write(true).open("/dev/ttyAMA0"),
-                        OpenOptions::new().write(true).open("/dev/ttyAMA0"),
-                    ) {
-                        let _ = Command::new("/bin/sh")
-                            .arg("-i")
-                            .stdin(Stdio::from(sin))
-                            .stdout(Stdio::from(sout))
-                            .stderr(Stdio::from(serr))
-                            .status();
-                    }
-                    let _ = tty.write_all(
-                        b"\r\n=== Exiting shell -> Shutting down QEMU VM... ===\r\n",
-                    );
-                    let _ = tty.flush();
-                    let _ = Command::new("poweroff").arg("-f").status();
-                    break;
-                }
-                _ => {}
-            }
+            thread::sleep(Duration::from_millis(500));
         }
     });
 }

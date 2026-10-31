@@ -64,6 +64,12 @@ impl BoardProfile {
                     }
                 }
             }
+            if let Ok(raw) = fs::read_to_string("/etc/quasar-board") {
+                let s = raw.trim();
+                if !s.is_empty() {
+                    return s.to_string();
+                }
+            }
             if Path::new("/sys/class/leds/cucumber:red:ring0").exists()
                 || Path::new("/boot/yandex-cucumber-i2ctop-overlay.dtb").exists()
             {
@@ -72,10 +78,25 @@ impl BoardProfile {
                 || Path::new("/boot/yandex-orion-i2c_top-overlay.dtb").exists()
             {
                 "orion".to_string()
+            } else if Path::new("/sys/class/leds/plum:red:ring1").exists()
+                || Path::new("/sys/class/leds/plum:red:ring0").exists()
+            {
+                if Path::new("/sys/class/leds/plum:white:clock-a1").exists() {
+                    "plum".to_string()
+                } else {
+                    "plumnc".to_string()
+                }
+            } else if Path::new("/sys/class/leds/station2:red:ring0").exists() {
+                "station2".to_string()
             } else if Path::new("/sys/class/leds/mini2:red:ring0").exists()
+                || Path::new("/sys/class/leds/mini2:red:ring1").exists()
                 || Path::new("/etc/init.d/S61leds_brightness").exists()
             {
-                "yandexmini2".to_string()
+                if Path::new("/sys/class/leds/mini2:white:clock-a1").exists() {
+                    "yandexmini2".to_string()
+                } else {
+                    "yandexmini2nc".to_string()
+                }
             } else if Path::new("/sys/class/leds/micro:red:ring0").exists()
                 || Path::new("/sys/class/leds/micro:red:ring1").exists()
             {
@@ -107,12 +128,21 @@ impl BoardProfile {
                 ),
                 "yandexmini2" => (
                     "yandexmini2".to_string(),
-                    "Яндекс Станция Мини 2 (YNDX-00021 / yandexmini2)".to_string(),
+                    "Яндекс Станция Мини 2 с часами (YNDX-00021 / yandexmini2)".to_string(),
                     "mini2".to_string(),
                     6,
                     0,
                     0,
                     true,
+                ),
+                "yandexmini2nc" => (
+                    "yandexmini2nc".to_string(),
+                    "Яндекс Станция Мини 2 без часов (YNDX-00020 / yandexmini2nc)".to_string(),
+                    "mini2".to_string(),
+                    6,
+                    0,
+                    0,
+                    false,
                 ),
                 "bergamot" => (
                     "bergamot".to_string(),
@@ -134,12 +164,21 @@ impl BoardProfile {
                 ),
                 "plum" => (
                     "plum".to_string(),
-                    "Яндекс Станция Лайт 2 (plum)".to_string(),
+                    "Яндекс Станция Лайт 2 Plum (3 LED + часы)".to_string(),
                     "plum".to_string(),
-                    6,
+                    3,
                     0,
                     0,
                     true,
+                ),
+                "plumnc" => (
+                    "plumnc".to_string(),
+                    "Яндекс Станция Лайт 2 Prune (3 LED, без часов)".to_string(),
+                    "plum".to_string(),
+                    3,
+                    0,
+                    0,
+                    false,
                 ),
                 "yandexmicro" => (
                     "yandexmicro".to_string(),
@@ -152,9 +191,9 @@ impl BoardProfile {
                 ),
                 "station2" => (
                     "station2".to_string(),
-                    "Яндекс Станция 2 (YNDX-00051 / station2)".to_string(),
+                    "Яндекс Станция 2 (YNDX-00051 / station-midi)".to_string(),
                     "station2".to_string(),
-                    64,
+                    88,
                     0,
                     0,
                     false,

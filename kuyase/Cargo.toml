@@ -12,4 +12,3 @@ flate2 = "1.1"
 tar = "0.4"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 eframe = "0.30"
-egui_tiles = { version = "0.11", features = ["serde"] }

@@ -224,8 +224,9 @@ pub fn run_board_verification(
             // Writing brightness while trigger is still [ledfb-ring] must be rejected and increment led_trigger_conflict_count
             adb.shell(
                 &format!(
-                    "echo '[ledfb-ring] none' > /sys/class/leds/{p}:red:ring0/trigger 2>/dev/null || true; \
-                     echo 200 > /sys/class/leds/{p}:red:ring0/brightness 2>/dev/null || true",
+                    "r=/sys/class/leds/{p}:red:ring0; [ -d \"$r\" ] || r=/sys/class/leds/{p}:red:ring1; \
+                     echo '[ledfb-ring] none' > \"$r/trigger\" 2>/dev/null || true; \
+                     echo 200 > \"$r/brightness\" 2>/dev/null || true",
                     p = sysfs_prefix
                 ),
                 Duration::from_secs(8),
@@ -280,8 +281,8 @@ pub fn run_board_verification(
                        echo 0 > /sys/class/leds/{p}:red:ring$i/brightness 2>/dev/null || true; \
                        echo 0 > /sys/class/leds/{p}:green:ring$i/brightness 2>/dev/null || true; \
                        echo 0 > /sys/class/leds/{p}:blue:ring$i/brightness 2>/dev/null || true; \
-                     done; \
-                     echo '[ledfb-ring] none' > /sys/class/leds/{p}:red:ring0/trigger 2>/dev/null || true",
+                       echo '[ledfb-ring] none' > /sys/class/leds/{p}:red:ring$i/trigger 2>/dev/null || true; \
+                     done",
                     n = ring_leds,
                     p = sysfs_prefix
                 ),

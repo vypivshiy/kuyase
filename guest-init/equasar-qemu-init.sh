@@ -32,6 +32,12 @@ for arg in $(cat /proc/cmdline); do
 done
 
 if [ "$BOARD" = "auto" ] || [ -z "$BOARD" ]; then
+  if [ -s /etc/quasar-board ]; then
+    BOARD=$(head -n 1 /etc/quasar-board 2>/dev/null | tr -d '\r\n ')
+  fi
+fi
+
+if [ "$BOARD" = "auto" ] || [ -z "$BOARD" ]; then
   DEV_TYPE=""
   if [ -f /system/vendor/quasar/quasar.cfg ]; then
     DEV_TYPE=$(sed -n 's/.*"deviceType"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /system/vendor/quasar/quasar.cfg 2>/dev/null | head -n 1)
@@ -40,7 +46,20 @@ if [ "$BOARD" = "auto" ] || [ -z "$BOARD" ]; then
     fi
   fi
   case "$DEV_TYPE" in
-    yandexmini_2|mini2) BOARD="yandexmini2" ;;
+    yandexmini_2|mini2)
+      if grep -q '4794659041' /system/vendor/quasar/quasar.cfg 2>/dev/null; then
+        BOARD="yandexmini2nc"
+      else
+        BOARD="yandexmini2"
+      fi
+      ;;
+    plum)
+      if grep -q '4794654278' /system/vendor/quasar/quasar.cfg 2>/dev/null; then
+        BOARD="plumnc"
+      else
+        BOARD="plum"
+      fi
+      ;;
     station_2|station-midi|yandexmidi) BOARD="station2" ;;
     "")
       if [ -e /etc/init.d/S61leds_brightness ]; then
@@ -58,15 +77,17 @@ if [ "$BOARD" = "auto" ] || [ -z "$BOARD" ]; then
 fi
 
 case "$BOARD" in
-  mini2|yandexmini_2) BOARD="yandexmini2" ;;
-  mini3)              BOARD="bergamot" ;;
-  mini3pro)           BOARD="pickle" ;;
-  lite2)              BOARD="plum" ;;
-  lite1|micro)        BOARD="yandexmicro" ;;
-  station3)           BOARD="orion" ;;
+  mini2|yandexmini_2)        BOARD="yandexmini2" ;;
+  mini2nc|yandexmini_2_nc)   BOARD="yandexmini2nc" ;;
+  mini3)                     BOARD="bergamot" ;;
+  mini3pro)                  BOARD="pickle" ;;
+  lite2)                     BOARD="plum" ;;
+  prune|lite2nc|plumnc)      BOARD="plumnc" ;;
+  lite1|micro)               BOARD="yandexmicro" ;;
+  station3)                  BOARD="orion" ;;
   station_2|station-midi|yandexmidi) BOARD="station2" ;;
-  street)             BOARD="mango" ;;
-  hub)                BOARD="saturn" ;;
+  street)                    BOARD="mango" ;;
+  hub)                       BOARD="saturn" ;;
 esac
 
 export QUASAR_BOARD="$BOARD"
@@ -112,10 +133,17 @@ case "$BOARD" in
     ;;
   yandexmini2)
     printf "Yandex Station Mini 2\0" > /tmp/fake-dt/model
-    printf "yandex,mini2\0amlogic,axg\0" > /tmp/fake-dt/compatible
+    printf "yandex,station-mini2\0amlogic,axg\0" > /tmp/fake-dt/compatible
     printf "axg_mini2_es\0" > /tmp/fake-dt/amlogic-dt-id
-    BOARD_NAME="Яндекс Станция Мини 2 (YNDX-00021 / yandexmini2)"
-    SYSFS_PREFIX="mini2"; RING_LEDS=6; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="true"; LED_DRIVER="sysfs"
+    BOARD_NAME="Яндекс Станция Мини 2 с часами (YNDX-00021 / yandexmini2)"
+    SYSFS_PREFIX="mini2"; RING_START=1; RING_LEDS=6; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="true"; LED_DRIVER="sysfs"
+    ;;
+  yandexmini2nc)
+    printf "Yandex Station Mini 2\0" > /tmp/fake-dt/model
+    printf "yandex,station-mini2\0amlogic,axg\0" > /tmp/fake-dt/compatible
+    printf "axg_mini2_es\0" > /tmp/fake-dt/amlogic-dt-id
+    BOARD_NAME="Яндекс Станция Мини 2 без часов (YNDX-00020 / yandexmini2nc)"
+    SYSFS_PREFIX="mini2"; RING_START=1; RING_LEDS=6; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="false"; LED_DRIVER="sysfs"
     ;;
   bergamot)
     printf "Yandex Bergamot\0" > /tmp/fake-dt/model
@@ -130,22 +158,28 @@ case "$BOARD" in
     SYSFS_PREFIX="pickle"; RING_LEDS=16; LOGO_LEDS=6; AMBILIGHT_LEDS=0; HAS_CLOCK="true"; LED_DRIVER="sysfs"
     ;;
   plum)
-    printf "Yandex Plum\0" > /tmp/fake-dt/model
-    printf "yandex,plum\0amlogic,axg\0" > /tmp/fake-dt/compatible
-    BOARD_NAME="Яндекс Станция Лайт 2 (plum)"
-    SYSFS_PREFIX="plum"; RING_LEDS=6; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="true"; LED_DRIVER="sysfs"
+    printf "Yandex Plum EVT2\0" > /tmp/fake-dt/model
+    printf "yandex,plum-evt2\0yandex,plum\0amlogic,axg\0" > /tmp/fake-dt/compatible
+    BOARD_NAME="Яндекс Станция Лайт 2 Plum (3 LED + часы)"
+    SYSFS_PREFIX="plum"; RING_START=1; RING_LEDS=3; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="true"; LED_DRIVER="sysfs"
+    ;;
+  plumnc)
+    printf "Yandex Prune EVT2\0" > /tmp/fake-dt/model
+    printf "yandex,prune-evt2\0yandex,prune\0amlogic,axg\0" > /tmp/fake-dt/compatible
+    BOARD_NAME="Яндекс Станция Лайт 2 Prune (3 LED, без часов)"
+    SYSFS_PREFIX="plum"; RING_START=1; RING_LEDS=3; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="false"; LED_DRIVER="sysfs"
     ;;
   yandexmicro)
     printf "Yandex Station Lite\0" > /tmp/fake-dt/model
     printf "yandex,yandexmicro\0amlogic,axg\0" > /tmp/fake-dt/compatible
     BOARD_NAME="Яндекс Станция Лайт 1 (YNDX-00025 / yandexmicro)"
-    SYSFS_PREFIX="micro"; RING_LEDS=3; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="false"; LED_DRIVER="sysfs"
+    SYSFS_PREFIX="micro"; RING_START=1; RING_LEDS=3; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="false"; LED_DRIVER="sysfs"
     ;;
   station2)
-    printf "Yandex Station 2\0" > /tmp/fake-dt/model
+    printf "Yandex Station Midi\0" > /tmp/fake-dt/model
     printf "yandex,station-midi\0amlogic,axg\0" > /tmp/fake-dt/compatible
-    BOARD_NAME="Яндекс Станция 2 (YNDX-00051 / station2)"
-    SYSFS_PREFIX="station2"; RING_LEDS=64; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="false"; LED_DRIVER="framebuffer"
+    BOARD_NAME="Яндекс Станция 2 (YNDX-00051 / station-midi)"
+    SYSFS_PREFIX="station2"; RING_LEDS=88; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="false"; LED_DRIVER="framebuffer"
     ;;
   mango)
     printf "Yandex Station Mango DVT\0" > /tmp/fake-dt/model
@@ -221,13 +255,14 @@ else
   echo "YNDX LED screen" > /sys/class/graphics/fb1/name
   echo 255 > /sys/class/backlight/fb0/brightness
   echo 255 > /sys/class/backlight/fb1/brightness
-  [ -e /dev/fb0 ] || dd if=/dev/zero of=/dev/fb0 bs=192 count=1 2>/dev/null || true
-  [ -e /dev/fb1 ] || dd if=/dev/zero of=/dev/fb1 bs=192 count=1 2>/dev/null || true
+  [ -e /dev/fb0 ] || dd if=/dev/zero of=/dev/fb0 bs=264 count=1 2>/dev/null || true
+  [ -e /dev/fb1 ] || dd if=/dev/zero of=/dev/fb1 bs=264 count=1 2>/dev/null || true
 fi
 
 if [ "$LED_DRIVER" != "i2c_sn3236" ]; then
-  i=0
-  while [ $i -le "$RING_LEDS" ]; do
+  RING_START="${RING_START:-0}"
+  i=$RING_START
+  while [ $i -lt $((RING_START + RING_LEDS)) ]; do
     for c in red green blue; do
       d="/sys/class/leds/${SYSFS_PREFIX}:${c}:ring${i}"
       mkdir -p "$d"
@@ -298,6 +333,13 @@ if [ "$LED_DRIVER" != "i2c_sn3236" ]; then
     ln -sfn "${SYSFS_PREFIX}:white:clock-p3" "/sys/class/leds/${SYSFS_PREFIX}:white:clockPLUS1"
     ln -sfn "${SYSFS_PREFIX}:white:clock-q3" "/sys/class/leds/${SYSFS_PREFIX}:white:clockPLUS2"
     ln -sfn "${SYSFS_PREFIX}:white:clock-m1" "/sys/class/leds/${SYSFS_PREFIX}:white:clockMINUS"
+    ln -sfn "${SYSFS_PREFIX}:white:clock-p3" "/sys/class/leds/${SYSFS_PREFIX}:white:clockDH"
+    ln -sfn "${SYSFS_PREFIX}:white:clock-q3" "/sys/class/leds/${SYSFS_PREFIX}:white:clockDL"
+    ln -sfn "${SYSFS_PREFIX}:white:clock-m1" "/sys/class/leds/${SYSFS_PREFIX}:white:clockDM"
+    for part in a b c d e f g; do
+      up=$(echo "$part" | tr 'a-g' 'A-G')
+      ln -sfn "${SYSFS_PREFIX}:white:clock-${part}1" "/sys/class/leds/${SYSFS_PREFIX}:white:clock${up}0"
+    done
   fi
 fi
 

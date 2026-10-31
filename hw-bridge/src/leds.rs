@@ -26,6 +26,18 @@ pub fn parse_led_pattern_str(raw: &str, ring_leds: usize) -> Vec<(Vec<[u8; 3]>, 
                         (rgb & 0xff) as u8,
                     ]);
                 }
+            } else if tok.len() == 8 {
+                if let Ok(rgbw) = u32::from_str_radix(tok, 16) {
+                    let r = ((rgbw >> 24) & 0xff) as u8;
+                    let g = ((rgbw >> 16) & 0xff) as u8;
+                    let b = ((rgbw >> 8) & 0xff) as u8;
+                    let w = (rgbw & 0xff) as u8;
+                    parsed.push([
+                        r.saturating_add(w / 2),
+                        g.saturating_add(w / 2),
+                        b.saturating_add(w / 2),
+                    ]);
+                }
             }
         }
         if !parsed.is_empty() && ring_leds > 0 {
@@ -42,9 +54,11 @@ pub fn parse_led_pattern_str(raw: &str, ring_leds: usize) -> Vec<(Vec<[u8; 3]>, 
 pub fn load_led_pattern(kind: &str, ring_leds: usize) -> Vec<(Vec<[u8; 3]>, u32)> {
     let candidates = [
         format!("/system/vendor/quasar/ledpatterns/ring/{}.led", kind),
+        format!("/system/vendor/quasar/ledpatterns/panel/{}.led", kind),
         format!("/system/vendor/quasar/ledpatterns/oknix/{}.led", kind),
         format!("/system/vendor/quasar/ledpatterns/{}.led", kind),
         format!("/system/vendor/quasar/ledpatterns/ring/alice_{}.led", kind),
+        format!("/system/vendor/quasar/ledpatterns/panel/alice_{}.led", kind),
         format!("/system/vendor/quasar/ledpatterns/oknix/alice_{}.led", kind),
         format!("/system/vendor/quasar/ledpatterns/alice_{}.led", kind),
         format!("/system/vendor/quasar/ledpatterns/alice_pro_{}.led", kind),
@@ -108,7 +122,15 @@ pub fn build_volume_led_frame(
     let clamped = vol_level.min(10);
     if !volume_frames.is_empty() {
         let idx = ((clamped as usize) * (volume_frames.len() - 1)) / 10;
-        return volume_frames[idx].0.clone();
+        let frame = &volume_frames[idx].0;
+        if clamped == 0
+            || frame
+                .first()
+                .map(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+                .unwrap_or(false)
+        {
+            return frame.clone();
+        }
     }
     let lit = ((clamped as usize) * ring_leds).div_ceil(10);
     let color = match clamped {
@@ -347,6 +369,13 @@ mod tests {
         assert_eq!(frames[0].1, 20);
         assert_eq!(frames[1].0[0], [0x00, 0xff, 0x80]);
         assert_eq!(frames[1].1, 35);
+
+        let rgbw_sample = "710ccc00 009f0020 20\n";
+        let rgbw_frames = parse_led_pattern_str(rgbw_sample, 88);
+        assert_eq!(rgbw_frames.len(), 1);
+        assert_eq!(rgbw_frames[0].0.len(), 88);
+        assert_eq!(rgbw_frames[0].0[0], [0x71, 0x0c, 0xcc]);
+        assert_eq!(rgbw_frames[0].0[1], [0x10, 0xaf, 0x10]);
     }
 
     #[test]
