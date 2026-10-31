@@ -1,8 +1,5 @@
-use crate::archive_formats::{
-    extract_payload_bytes_into_tree, extract_squashfs_into_tree, extract_ubi_into_tree,
-    extract_ubifs_into_tree, SQUASHFS_MAGIC, UBIFS_NODE_MAGIC, UBI_EC_MAGIC,
-};
-use crate::ext_fs::{read_ext2_image, write_ext2_image, EXT2_SUPER_MAGIC};
+use crate::archive_formats::{extract_payload_bytes_into_tree, extract_ubi_into_tree, UBI_EC_MAGIC};
+use crate::ext_fs::write_ext2_image;
 use crate::session::{resolve_bridge_binary, EMBEDDED_HW_BRIDGE};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -208,10 +205,6 @@ pub fn read_tar_from_reader<R: Read>(reader: R) -> Result<RootfsTree, String> {
     }
 
     Ok(tree)
-}
-
-pub fn read_tar_into_tree<R: Read>(reader: R) -> Result<RootfsTree, String> {
-    read_tar_from_reader(reader)
 }
 
 pub fn read_tar_gz_into_tree(path: &Path) -> Result<RootfsTree, String> {
@@ -552,61 +545,16 @@ fn load_dump_into_tree(path: &Path) -> Result<RootfsTree, String> {
         raw = dec;
     }
 
-    // Check UBI image ("UBI#"), SquashFS ("hsqs" 0x73717368), or UBIFS (0x06101831)
-    if raw.len() >= 4 {
-        if &raw[0..4] == UBI_EC_MAGIC {
-            return extract_ubi_into_tree(&raw);
-        }
-        let magic_le = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
-        if magic_le == SQUASHFS_MAGIC {
-            return extract_squashfs_into_tree(&raw);
-        }
-        if magic_le == UBIFS_NODE_MAGIC {
-            return extract_ubifs_into_tree(&raw);
-        }
+    if raw.len() >= 4 && &raw[0..4] == UBI_EC_MAGIC {
+        return extract_ubi_into_tree(&raw);
     }
 
-    // Check ext2/ext4 magic at offset 1080
-    if raw.len() >= 2048 && u16::from_le_bytes([raw[1080], raw[1081]]) == EXT2_SUPER_MAGIC {
-        let tmp = std::env::temp_dir().join(format!("kuyase-ext-in-{}.img", std::process::id()));
-        fs::write(&tmp, &raw).map_err(|e| e.to_string())?;
-        let res = read_ext2_image(&tmp);
-        let _ = fs::remove_file(&tmp);
-        return res;
-    }
-
-    // Check if raw image contains an embedded UBIFS / SquashFS / gzip / tar payload
-    if raw.windows(4).any(|w| w == [0x31, 0x18, 0x10, 0x06]) {
-        if let Ok(t) = extract_ubifs_into_tree(&raw) {
-            return Ok(t);
-        }
-    }
-    if let Some(pos) = raw.windows(4).position(|w| w == b"hsqs") {
-        if let Ok(t) = extract_squashfs_into_tree(&raw[pos..]) {
-            return Ok(t);
-        }
-    }
-    if let Some(pos) = raw.windows(2).position(|w| w == [0x1f, 0x8b]) {
-        let mut dec = Vec::new();
-        if GzDecoder::new(Cursor::new(&raw[pos..])).read_to_end(&mut dec).is_ok() {
-            if let Ok(t) = read_tar_from_reader(Cursor::new(&dec)) {
-                if !t.entries.is_empty() {
-                    return Ok(t);
-                }
-            }
-        }
-    }
-
-    if let Ok(t) = read_tar_from_reader(Cursor::new(&raw)) {
-        if !t.entries.is_empty() {
-            return Ok(t);
-        }
-    }
-
-    Err(format!(
-        "unsupported or unrecognized dump format: {}",
-        path.display()
-    ))
+    extract_payload_bytes_into_tree(&raw).map_err(|_| {
+        format!(
+            "unsupported or unrecognized dump format: {}",
+            path.display()
+        )
+    })
 }
 
 fn load_host_dir_recursive(base: &Path, cur: &Path, tree: &mut RootfsTree) -> Result<(), String> {
@@ -642,11 +590,7 @@ pub fn inject_guest_files(root: &Path, tree: &mut RootfsTree) -> Result<(), Stri
     let init_path = root.join("guest-init").join("equasar-qemu-init.sh");
     let raw_init = if init_path.is_file() {
         let b = fs::read(&init_path).map_err(|e| e.to_string())?;
-        let norm = normalize_crlf_to_lf(&b);
-        if norm != b {
-            let _ = fs::write(&init_path, &norm);
-        }
-        norm
+        normalize_crlf_to_lf(&b)
     } else {
         normalize_crlf_to_lf(EMBEDDED_INIT_SH)
     };
@@ -815,31 +759,29 @@ pub fn prepare_images(
             let req_slug = requested_board
                 .filter(|b| !b.trim().is_empty() && !b.eq_ignore_ascii_case("auto"))
                 .map(normalize_board_slug);
-            if let Ok(rd) = fs::read_dir(dp) {
-                let mut paths: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
-                paths.sort();
-                for sp in paths {
-                    let Some(sname) = sp.file_name().and_then(|s| s.to_str()) else {
-                        continue;
-                    };
-                    if is_ignored_backup_entry(sname) {
-                        continue;
-                    }
-                    if let Some(ref target_slug) = req_slug {
-                        if let Some(hint) = detect_board_hint_from_path(&sp) {
-                            if &hint != target_slug {
-                                continue;
-                            }
+            let rd = fs::read_dir(dp).map_err(|e| e.to_string())?;
+            let mut paths: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+            paths.sort();
+            for sp in paths {
+                let Some(sname) = sp.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if is_ignored_backup_entry(sname) {
+                    continue;
+                }
+                if let Some(ref target_slug) = req_slug {
+                    if let Some(hint) = detect_board_hint_from_path(&sp) {
+                        if &hint != target_slug {
+                            continue;
                         }
                     }
-                    if let Ok(res) = build_guest_image_from_dump(root, req_slug.as_deref(), &sp, None) {
-                        built.push(res);
-                    }
                 }
+                built.push(build_guest_image_from_dump(root, req_slug.as_deref(), &sp, None)?);
             }
-            if !built.is_empty() {
-                return Ok(built);
+            if built.is_empty() {
+                return Err(format!("no matching firmware dumps found in {}", dp.display()));
             }
+            return Ok(built);
         }
         let res = build_guest_image_from_dump(root, requested_board, dp, None)?;
         return Ok(vec![res]);
@@ -864,17 +806,16 @@ pub fn prepare_images(
         }
     }
 
-    let mut built = Vec::new();
-    for (_, p) in discover_firmware_dumps(root) {
-        if let Ok(res) = build_guest_image_from_dump(root, requested_board, &p, None) {
-            built.push(res);
-        }
-    }
-    if built.is_empty() {
+    let discovered = discover_firmware_dumps(root);
+    if discovered.is_empty() {
         return Err(format!(
             "no firmware dumps found in {}/backups (use --dump <path> or run `kuyase dump <ip>`)",
             root.display()
         ));
+    }
+    let mut built = Vec::new();
+    for (_, p) in discovered {
+        built.push(build_guest_image_from_dump(root, requested_board, &p, None)?);
     }
     Ok(built)
 }
@@ -882,6 +823,7 @@ pub fn prepare_images(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ext_fs::read_ext2_image;
 
     #[test]
     fn test_synthetic_dump_board_detection_scrubbing_crlf_and_ext4_roundtrip() {
@@ -924,7 +866,7 @@ mod tests {
         dump_tree.insert_symlink("bin/sh", "busybox".to_string());
         dump_tree.insert_file("etc/wpa_supplicant.conf", b"psk=secret".to_vec(), 0o600);
         dump_tree.insert_file("data/secret.txt", b"token=123".to_vec(), 0o600);
-        dump_tree.insert_file("usr/local/bin/dropbear", b"backdoor".to_vec(), 0o755);
+        dump_tree.insert_file("usr/local/bin/dropbear", b"dropbear-bin".to_vec(), 0o755);
         dump_tree.insert_file("var/auth.sqlite3", b"sqlite".to_vec(), 0o600);
 
         let dump_tar_path = temp_dir.join("rootfs.tar.gz");

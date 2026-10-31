@@ -1,6 +1,6 @@
 use crate::ext_fs::{read_ext2_image, EXT2_SUPER_MAGIC};
 use crate::image_builder::{read_tar_from_reader, RootfsTree};
-use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
+use flate2::read::{DeflateDecoder, ZlibDecoder};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Cursor, Read};
@@ -710,19 +710,6 @@ pub fn extract_payload_bytes_into_tree(payload: &[u8]) -> Result<RootfsTree, Str
     if let Some(pos) = payload.windows(4).position(|w| w == b"hsqs") {
         if let Ok(tree) = extract_squashfs_into_tree(&payload[pos..]) {
             return Ok(tree);
-        }
-    }
-    if let Some(pos) = payload.windows(2).position(|w| w == [0x1f, 0x8b]) {
-        let mut dec = Vec::new();
-        if GzDecoder::new(Cursor::new(&payload[pos..]))
-            .read_to_end(&mut dec)
-            .is_ok()
-        {
-            if let Ok(t) = read_tar_from_reader(Cursor::new(&dec)) {
-                if !t.entries.is_empty() {
-                    return Ok(t);
-                }
-            }
         }
     }
     if let Ok(t) = read_tar_from_reader(Cursor::new(payload)) {

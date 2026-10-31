@@ -22,12 +22,22 @@ pub fn resolve_repo_root() -> PathBuf {
         }
     }
     if let Ok(exe) = env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            if exe_dir.join("Image").is_file() && !exe_dir.join("..").join("Cargo.toml").is_file() {
+                return exe_dir.to_path_buf();
+            }
+        }
         for ancestor in exe.ancestors().skip(1).take(4) {
             if ancestor.join("guest-init").is_dir()
                 || ancestor.join("work").is_dir()
                 || ancestor.join("Releases").is_dir()
             {
                 return ancestor.to_path_buf();
+            }
+        }
+        if let Some(exe_dir) = exe.parent() {
+            if exe_dir.join("Image").is_file() {
+                return exe_dir.to_path_buf();
             }
         }
     }
@@ -49,6 +59,8 @@ fn find_in_path(bin_names: &[&str]) -> Option<PathBuf> {
 
 pub fn resolve_qemu_binary(root: &Path) -> Result<PathBuf, String> {
     let local_candidates = [
+        root.join("qemu-system-aarch64.exe"),
+        root.join("qemu-system-aarch64"),
         root.join("bin").join("qemu-system-aarch64.exe"),
         root.join("bin").join("qemu-system-aarch64"),
         root.join("Releases").join("qemu-system-aarch64.exe"),
@@ -83,6 +95,7 @@ pub fn resolve_qemu_binary(root: &Path) -> Result<PathBuf, String> {
 
 pub fn resolve_kernel_image(root: &Path) -> Result<PathBuf, String> {
     let candidates = [
+        root.join("Image"),
         root.join("kernel").join("Image"),
         root.join("Releases").join("Image"),
         root.join("bin").join("Image"),
@@ -93,7 +106,8 @@ pub fn resolve_kernel_image(root: &Path) -> Result<PathBuf, String> {
         }
     }
     Err(format!(
-        "Guest Linux kernel Image not found in {}/kernel/Image, {}/Releases/Image, or {}/bin/Image",
+        "Guest Linux kernel Image not found in {}/Image, {}/kernel/Image, {}/Releases/Image, or {}/bin/Image",
+        root.display(),
         root.display(),
         root.display(),
         root.display()
@@ -129,6 +143,7 @@ pub fn resolve_bridge_binary(root: &Path) -> Result<PathBuf, String> {
             .join("qemu-hw-bridge"),
         root.join("guest-init").join("bin").join("qemu-hw-bridge"),
         root.join("Releases").join("qemu-hw-bridge"),
+        root.join("qemu-hw-bridge"),
     ];
 
     let mut newest: Option<(PathBuf, SystemTime)> = None;
@@ -494,21 +509,16 @@ impl EmulatorSession {
         self.serial_lines.lock().unwrap().clear();
     }
 
-    pub fn append_serial_line(&self, line: impl Into<String>) {
-        let clean = strip_ansi_and_control_chars(&line.into());
+    pub fn push_serial_line(&self, line: impl Into<String>) {
         let mut guard = self.serial_lines.lock().unwrap();
         if guard.len() >= 2000 {
             guard.pop_front();
         }
-        guard.push_back(clean);
+        guard.push_back(line.into());
     }
 
     pub fn serial_lines(&self) -> Vec<String> {
         self.serial_lines.lock().unwrap().iter().cloned().collect()
-    }
-
-    pub fn serial_lines_arc(&self) -> Arc<Mutex<VecDeque<String>>> {
-        self.serial_lines.clone()
     }
 
     pub fn is_running(&mut self) -> bool {

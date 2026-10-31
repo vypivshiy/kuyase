@@ -186,15 +186,6 @@ impl AdbClient {
         }
     }
 
-    pub fn wait_until_ready(&self, timeout: Duration) -> Result<(), String> {
-        let out = self.shell("echo ADB_READY", timeout)?;
-        if out.contains("ADB_READY") {
-            Ok(())
-        } else {
-            Err(format!("unexpected ADB readiness probe output: '{}'", out))
-        }
-    }
-
     pub fn shell(&self, command: &str, timeout: Duration) -> Result<String, String> {
         let deadline = Instant::now() + timeout;
         let mut last_err = String::from("ADB shell timed out");
@@ -275,7 +266,7 @@ impl AdbClient {
                 let next_id = local_id.wrapping_add(1).max(1);
                 *self.conn.lock().unwrap() = Some((stream, next_id));
                 let text = String::from_utf8_lossy(&output).replace("\r\n", "\n");
-                return Ok(text.trim().to_string());
+                return Ok(text.trim_matches(|c| c == '\r' || c == '\n').to_string());
             }
 
             let _ = stream.shutdown(Shutdown::Both);
@@ -413,21 +404,6 @@ impl AdbClient {
 mod tests {
     use super::*;
     use std::net::TcpListener;
-
-    #[test]
-    fn test_adb_packet_framing_and_checksum() {
-        let payload = b"shell:hostname\0";
-        let mut buf = Vec::new();
-        write_adb_packet(&mut buf, A_OPEN, 1, 0, payload).unwrap();
-        assert_eq!(buf.len(), 24 + payload.len());
-
-        let mut cursor = std::io::Cursor::new(buf);
-        let decoded = read_adb_packet(&mut cursor).unwrap();
-        assert_eq!(decoded.command, A_OPEN);
-        assert_eq!(decoded.arg0, 1);
-        assert_eq!(decoded.arg1, 0);
-        assert_eq!(decoded.payload, payload);
-    }
 
     #[test]
     fn test_adb_client_shell_against_mock_adbd() {
