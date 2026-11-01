@@ -609,8 +609,9 @@ pcm.dmix_spk {
     rate 48000
     channels 2
     format S16_LE
-    period_size 1024
-    buffer_size 8192
+    # TCG jitter: 680 ms of buffer keeps AirPlay from underrunning
+    period_size 4096
+    buffer_size 32768
   }
 }
 
@@ -704,8 +705,17 @@ fi
 
 # 10. Start Virtual Speaker Twin & Hardware Bridge (:8091)
 # If host passed an updated qemu-hw-bridge binary via second virtio drive (/dev/vdb), hot-update it before launch
-if [ -b /dev/vdb ] && [ "$(dd if=/dev/vdb bs=4 count=1 2>/dev/null)" = "$(printf '\177ELF')" ]; then
-  cat /dev/vdb > /usr/local/bin/qemu-hw-bridge 2>/dev/null || true
+# The bridge can arrive on /dev/vdc as well as /dev/vdb (depending on whether a
+# data disk is attached); a copy on the persistent /data disk wins.
+for _brdev in /dev/vdc /dev/vdb; do
+  [ -b "$_brdev" ] || continue
+  [ "$(dd if="$_brdev" bs=4 count=1 2>/dev/null)" = "$(printf '\177ELF')" ] || continue
+  cat "$_brdev" > /usr/local/bin/qemu-hw-bridge 2>/dev/null || true
+  chmod 0755 /usr/local/bin/qemu-hw-bridge 2>/dev/null || true
+  break
+done
+if [ -x /data/qemu-hw-bridge ]; then
+  cp -f /data/qemu-hw-bridge /usr/local/bin/qemu-hw-bridge 2>/dev/null || true
   chmod 0755 /usr/local/bin/qemu-hw-bridge 2>/dev/null || true
 fi
 /usr/local/bin/qemu-hw-bridge >/tmp/hw-bridge.log 2>&1 &
