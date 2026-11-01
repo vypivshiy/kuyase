@@ -1643,7 +1643,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kuyase"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "eframe",
  "flate2",
@@ -2385,7 +2385,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "protocol"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2399,7 +2399,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "qemu-hw-bridge"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "protocol",
  "serde",
