@@ -367,7 +367,7 @@ if [ "$BOARD" = "orion" ]; then
   echo "ring" > /sys/class/graphics/fb2/name
   write_fb_geom fb0 12
   write_fb_geom fb1 36
-  write_fb_geom fb2 36
+  write_fb_geom fb2 36 1 24
   echo 255 > /sys/class/backlight/fb0/brightness
   echo 255 > /sys/class/backlight/fb1/brightness
   echo 255 > /sys/class/backlight/fb2/brightness
