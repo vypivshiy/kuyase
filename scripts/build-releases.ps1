@@ -23,10 +23,16 @@ Copy-Item -Force "target/armv7-unknown-linux-musleabihf/release/qemu-hw-bridge" 
 Copy-Item -Force "target/armv7-unknown-linux-musleabihf/release/qemu-hw-bridge" "Releases/qemu-hw-bridge"
 
 Write-Host "=== [2/4] Сборка десктопного приложения и CLI для Windows x64 (kuyase.exe) ===" -ForegroundColor Cyan
+$WinBinPath = "target/release/kuyase.exe"
 cargo build --release -p kuyase
-if ($LASTEXITCODE -ne 0) { throw "Ошибка сборки kuyase.exe" }
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[kuyase] target/release/kuyase.exe занят запущенным процессом, собираем в target-win-release..." -ForegroundColor Yellow
+    cargo build --release -p kuyase --target-dir target-win-release
+    if ($LASTEXITCODE -ne 0) { throw "Ошибка сборки kuyase.exe" }
+    $WinBinPath = "target-win-release/release/kuyase.exe"
+}
 
-Copy-Item -Force "target/release/kuyase.exe" "Releases/kuyase.exe"
+Copy-Item -Force $WinBinPath "Releases/kuyase.exe"
 
 if (Test-Path "kernel/kuyase-kernel-arm64.img") {
     Copy-Item -Force "kernel/kuyase-kernel-arm64.img" "Releases/kuyase-kernel-arm64.img"
