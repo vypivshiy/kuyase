@@ -307,7 +307,7 @@ pub fn normalize_board_slug(raw: &str) -> String {
         "mini" | "mini1" | "yandexmini" => "yandexmini".to_string(),
         "mini2" | "yandexmini_2" | "yandexmini2" => "yandexmini2".to_string(),
         "mini2nc" | "yandexmini_2_nc" | "yandexmini2nc" => "yandexmini2nc".to_string(),
-        "mini3" | "bergamot" => "bergamot".to_string(),
+        "mini3" | "yandexmini_3" | "yandexmini3" | "bergamot" => "bergamot".to_string(),
         "mini3pro" | "pickle" => "pickle".to_string(),
         "lite2" | "plum" => "plum".to_string(),
         "prune" | "lite2nc" | "plumnc" => "plumnc".to_string(),
@@ -459,6 +459,8 @@ mod tests {
         assert_eq!(normalize_board_slug("mini1"), "yandexmini");
         assert_eq!(normalize_board_slug("mini2"), "yandexmini2");
         assert_eq!(normalize_board_slug("mini2nc"), "yandexmini2nc");
+        assert_eq!(normalize_board_slug("mini3"), "bergamot");
+        assert_eq!(normalize_board_slug("yandexmini3"), "bergamot");
         assert_eq!(normalize_board_slug("lite1"), "yandexmicro");
         assert_eq!(normalize_board_slug("lite2"), "plum");
         assert_eq!(normalize_board_slug("prune"), "plumnc");

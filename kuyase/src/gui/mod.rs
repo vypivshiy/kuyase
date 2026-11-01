@@ -15,6 +15,7 @@ use std::time::Duration;
 pub const BOARD_LABELS: &[(&str, &str)] = &[
     ("cucumber", "cucumber — Станция Миди (24 LED + Часы + 6 LED Лого)"),
     ("orion", "orion — Яндекс Станция 3 (36 LED + Ambilight + Матрица 21x12)"),
+    ("bergamot", "bergamot — Станция Мини 3 (6 LED + Часы)"),
     ("yandexmini2", "yandexmini2 — Станция Мини 2 с часами (6 LED + Часы)"),
     ("yandexmini2nc", "yandexmini2nc — Станция Мини 2 без часов (6 LED)"),
     ("plum", "plum — Станция Лайт 2 с часами (3 LED + Часы)"),
@@ -22,7 +23,6 @@ pub const BOARD_LABELS: &[(&str, &str)] = &[
     ("station2", "station2 — Яндекс Станция 2 (88 LED световая панель)"),
     ("yandexmini", "yandexmini — Станция Мини 1 (6 LED SN3236 BGR + ToF)"),
     ("yandexmicro", "yandexmicro — Станция Лайт 1 (3 LED sysfs)"),
-    ("bergamot", "bergamot — Станция Мини 3 (6 LED + Часы)"),
     ("pickle", "pickle — Станция Мини 3 Про (16 LED + Часы + 6 LED Лого)"),
     ("mango", "mango — Станция Стрит (4 LED + 3 LED Лого)"),
     ("saturn", "saturn — Яндекс Хаб (1 LED)"),

@@ -148,6 +148,7 @@ kuyase test --board yandexmini
 | `yandexmini` | Станция Мини (`YNDX-0004`) | 32-bit `armhf` | 6-LED кольцо I2C `SN3236` (`0x3c`), лазерный дальномер `VL53L0X` (`ToF`), 4 микрофона |
 | `yandexmini2` | Станция Мини 2 с часами (`YNDX-00021`) | 32-bit `armhf` | 6-LED кольцо `mini2:*:ring1..6`, 7-сегментные часы `mini2:white:clock*`, датчик света `LTR-308` (`ALS`), 4 микрофона |
 | `yandexmini2nc` | Станция Мини 2 без часов (`YNDX-00020`) | 32-bit `armhf` | 6-LED кольцо `mini2:*:ring1..6`, датчик света `LTR-308` (`ALS`), 4 микрофона |
+| `bergamot` | Станция Мини 3 (`YNDX-00027`) | 32-bit `armhf` | 6-LED панель (`/dev/fb0` + `bergamot:*:ring0..5`, `AW21018`), 32-сегментные часы `bergamot:white:clock*` (`AW21036`), усилитель `ACM8625P` (`2-002c`), датчик света `LTR-308` (`ALS`), USB-C PD (`husb238_pd` `12 В`), 3 микрофона |
 | `yandexmicro` | Станция Лайт (`YNDX-00025`) | 32-bit `armhf` | 3-LED кольцо `micro:*:ring1..3`, 4 микрофона |
 | `plum` | Станция Лайт 2 с часами (`yandex,plum`) | 32-bit `armhf` | 3-LED кольцо `plum:*:ring1..3`, 7-сегментные часы `plum:white:clock*`, датчик света `LTR-308` (`ALS`), 2 микрофона |
 | `plumnc` | Станция Лайт 2 без часов (`yandex,prune`) | 32-bit `armhf` | 3-LED кольцо `plum:*:ring1..3`, датчик света `LTR-308` (`ALS`), 2 микрофона |
@@ -161,7 +162,6 @@ kuyase test --board yandexmini
 
 | Код | Модель | Userspace | Устройства |
 | :--- | :--- | :--- | :--- |
-| `bergamot` | Станция Мини 3 | 32-bit `armhf` | 6-LED кольцо (`/dev/fb0`), LED-часы, 4 микрофона |
 | `pickle` | Станция Мини 3 Про | 64-bit `aarch64` | 16-LED кольцо, 6-LED логотип, 36-сегментные часы, датчик света `LTR-308` (`ALS`), 4 микрофона |
 | `mango` | Станция Стрит | 32-bit `armhf` | 3-LED логотип RGBW, 4-LED индикатор заряда |
 | `saturn` | Умный хаб Яндекса | 32-bit `armhf` | 1 RGB-светодиод статуса (без аудио и микрофонов) |

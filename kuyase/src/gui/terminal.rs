@@ -30,7 +30,7 @@ const SERIAL_SNIPPETS: &[(&str, &str)] = &[
         "for d in /sys/class/leds/*:red:ring*; do echo ledfb-ring > \"$d/trigger\"; echo 200 > \"$d/brightness\"; break; done",
     ),
     (
-        "Часы: Перебор всех 45 сегментов (cucumber / mini2 / plum)",
+        "Часы: Перебор всех 45 сегментов (cucumber / mini2 / bergamot / plum)",
         "for d in /sys/class/leds/*:white:clock-*; do echo 0 > \"$d/brightness\"; done; for d in /sys/class/leds/*:white:clock-*; do echo 255 > \"$d/brightness\"; usleep 35000; done",
     ),
     (

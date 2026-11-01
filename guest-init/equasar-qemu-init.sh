@@ -116,7 +116,9 @@ if [ "$BOARD" = "auto" ] || [ -z "$BOARD" ]; then
       ;;
     station_2|station-midi|yandexmidi) BOARD="station2" ;;
     "")
-      if [ -e /etc/init.d/S61leds_brightness ]; then
+      if [ -e /lib/firmware/bergamot-acm8625.cfg ]; then
+        BOARD="bergamot"
+      elif [ -e /etc/init.d/S61leds_brightness ]; then
         BOARD="yandexmini2"
       elif [ -e /boot/yandex-cucumber-i2ctop-overlay.dtb ]; then
         BOARD="cucumber"
@@ -133,7 +135,7 @@ fi
 case "$BOARD" in
   mini2|yandexmini_2)        BOARD="yandexmini2" ;;
   mini2nc|yandexmini_2_nc)   BOARD="yandexmini2nc" ;;
-  mini3)                     BOARD="bergamot" ;;
+  mini3|yandexmini_3|yandexmini3) BOARD="bergamot" ;;
   mini3pro)                  BOARD="pickle" ;;
   lite2)                     BOARD="plum" ;;
   prune|lite2nc|plumnc)      BOARD="plumnc" ;;
@@ -251,7 +253,7 @@ case "$BOARD" in
   bergamot)
     printf "Yandex Bergamot\0" > /tmp/fake-dt/model
     printf "yandex,bergamot\0amlogic,axg\0" > /tmp/fake-dt/compatible
-    BOARD_NAME="Яндекс Станция Мини 3 (bergamot)"
+    BOARD_NAME="Яндекс Станция Мини 3 (YNDX-00027 / bergamot)"
     SYSFS_PREFIX="bergamot"; RING_LEDS=6; LOGO_LEDS=0; AMBILIGHT_LEDS=0; HAS_CLOCK="true"; LED_DRIVER="framebuffer"
     ;;
   pickle)
@@ -381,6 +383,9 @@ else
   esac
   echo 255 > /sys/class/backlight/fb0/brightness
   echo 255 > /sys/class/backlight/fb1/brightness
+  mkdir -p /sys/class/graphics/fb0/device/backlight /sys/class/graphics/fb1/device/backlight
+  ln -sfn /sys/class/backlight/fb0 /sys/class/graphics/fb0/device/backlight/fb0
+  ln -sfn /sys/class/backlight/fb1 /sys/class/graphics/fb1/device/backlight/fb1
   [ -e /dev/fb0 ] || dd if=/dev/zero of=/dev/fb0 bs=264 count=1 2>/dev/null || true
   [ -e /dev/fb1 ] || dd if=/dev/zero of=/dev/fb1 bs=264 count=1 2>/dev/null || true
 fi
@@ -440,12 +445,11 @@ if [ "$LED_DRIVER" != "i2c_sn3236" ]; then
     for pos in 1 2 3 4; do
       for part in a b c d e f g; do
         d="/sys/class/leds/${SYSFS_PREFIX}:white:clock-${part}${pos}"
-        mkdir -p "$d"
+        mkdir -p "$d/device"
         echo 0 > "$d/brightness"
         echo 255 > "$d/max_brightness"
         echo "[none]" > "$d/trigger"
-        up=$(echo "$part" | tr 'a-g' 'A-G')
-        ln -sfn "${SYSFS_PREFIX}:white:clock-${part}${pos}" "/sys/class/leds/${SYSFS_PREFIX}:white:clock${up}${pos}"
+        echo "2;3;104;90;162;180;255;255" > "$d/device/brightness_scale"
       done
     done
     for sym in p3 q3 p4 q4 p5 q5 p6 q6 p7 q7 h1 h2 m1 m2 l1 l2 deg; do
@@ -462,10 +466,32 @@ if [ "$LED_DRIVER" != "i2c_sn3236" ]; then
     ln -sfn "${SYSFS_PREFIX}:white:clock-p3" "/sys/class/leds/${SYSFS_PREFIX}:white:clockDH"
     ln -sfn "${SYSFS_PREFIX}:white:clock-q3" "/sys/class/leds/${SYSFS_PREFIX}:white:clockDL"
     ln -sfn "${SYSFS_PREFIX}:white:clock-m1" "/sys/class/leds/${SYSFS_PREFIX}:white:clockDM"
-    for part in a b c d e f g; do
-      up=$(echo "$part" | tr 'a-g' 'A-G')
-      ln -sfn "${SYSFS_PREFIX}:white:clock-${part}1" "/sys/class/leds/${SYSFS_PREFIX}:white:clock${up}0"
-    done
+    if [ "$BOARD" = "bergamot" ] || [ "$BOARD" = "plum" ]; then
+      for pos in 1 2 3 4; do
+        idx=$((pos - 1))
+        for part in a b c d e f g; do
+          up=$(echo "$part" | tr 'a-g' 'A-G')
+          ln -sfn "${SYSFS_PREFIX}:white:clock-${part}${pos}" "/sys/class/leds/${SYSFS_PREFIX}:white:clock${up}${idx}"
+        done
+      done
+      if [ "$BOARD" = "plum" ]; then
+        ln -sfn "${SYSFS_PREFIX}:white:clock-h1" "/sys/class/leds/${SYSFS_PREFIX}:white:clockH0"
+        ln -sfn "${SYSFS_PREFIX}:white:clock-h2" "/sys/class/leds/${SYSFS_PREFIX}:white:clockH1"
+        ln -sfn "${SYSFS_PREFIX}:white:clock-l1" "/sys/class/leds/${SYSFS_PREFIX}:white:clockH2"
+        ln -sfn "${SYSFS_PREFIX}:white:clock-l2" "/sys/class/leds/${SYSFS_PREFIX}:white:clockH3"
+      fi
+    else
+      for pos in 1 2 3 4; do
+        for part in a b c d e f g; do
+          up=$(echo "$part" | tr 'a-g' 'A-G')
+          ln -sfn "${SYSFS_PREFIX}:white:clock-${part}${pos}" "/sys/class/leds/${SYSFS_PREFIX}:white:clock${up}${pos}"
+        done
+      done
+      for part in a b c d e f g; do
+        up=$(echo "$part" | tr 'a-g' 'A-G')
+        ln -sfn "${SYSFS_PREFIX}:white:clock-${part}1" "/sys/class/leds/${SYSFS_PREFIX}:white:clock${up}0"
+      done
+    fi
   fi
 fi
 
@@ -482,8 +508,16 @@ elif [ "$BOARD" = "orion" ]; then
   echo "meson-saradc" > /sys/bus/iio/devices/iio:device1/name
 else
   echo "ltr308als01" > /sys/bus/iio/devices/iio:device0/name
+  echo "ltr308als01" > /sys/bus/iio/devices/iio:device1/name
 fi
 echo 240 > /sys/bus/iio/devices/iio:device0/in_illuminance_raw
+for iio_dev in /sys/bus/iio/devices/iio:device0 /sys/bus/iio/devices/iio:device1; do
+  [ "$iio_dev" = "/sys/bus/iio/devices/iio:device0" ] || ln -sfn /sys/bus/iio/devices/iio:device0/in_illuminance_raw "$iio_dev/in_illuminance_raw"
+  ln -sfn /sys/bus/iio/devices/iio:device0/in_illuminance_raw "$iio_dev/in_intensity_input"
+  ln -sfn /sys/bus/iio/devices/iio:device0/in_illuminance_raw "$iio_dev/in_intensity_raw"
+  echo 1 > "$iio_dev/in_intensity_hardwaregain"
+  echo "0.1" > "$iio_dev/in_intensity_integration_time"
+done
 echo 0 > /sys/bus/iio/devices/iio:device0/in_voltage0_mean_raw
 echo 621 > /sys/bus/iio/devices/iio:device0/in_voltage1_mean_raw
 echo 362 > /sys/bus/iio/devices/iio:device0/in_voltage2_mean_raw
@@ -502,6 +536,13 @@ mkdir -p /sys/class/input/event0/device
 echo 1 > /sys/class/input/event0/device/enable_ps_sensor
 echo 30 > /sys/class/input/event0/device/set_delay_ms
 
+mkdir -p /sys/class/unifykeys
+echo 1 > /sys/class/unifykeys/attach
+echo 0 > /sys/class/unifykeys/lock
+echo "assembly" > /sys/class/unifykeys/name
+echo "yes" > /sys/class/unifykeys/exist
+echo '{"fabric":"rev1"}' > /sys/class/unifykeys/read
+
 mkdir -p /sys/bus/i2c/devices/3-0021 /sys/bus/i2c/devices/3-0037
 if [ "$BOARD" = "orion" ]; then
   mkdir -p /sys/bus/i2c/devices/2-002c /sys/bus/i2c/devices/3-002c /sys/bus/i2c/devices/3-002d /sys/bus/i2c/devices/3-002e
@@ -518,6 +559,19 @@ if [ "$BOARD" = "orion" ]; then
   echo 3250 > /sys/class/power_supply/ya_pd/current_now
   echo '[{"name":"main","assembly":"1"},{"name":"top","assembly":"1"}]' > /sys/devices/platform/pcba_ids/pcba_ids_drv/pcba_ids
   touch /dev/ree2aocpu
+elif [ "$BOARD" = "bergamot" ]; then
+  mkdir -p /sys/bus/i2c/devices/2-002c
+  echo "acm8625" > /sys/bus/i2c/devices/2-002c/name
+  echo "bergamot-acm8625.cfg" > /sys/bus/i2c/devices/2-002c/settings_file
+  echo "bergamot-acm8625.cfg" > /sys/bus/i2c/devices/2-002c/default_settings
+  ln -sfn /sys/bus/i2c/devices/2-002c/settings_file /tmp/amp_settings_file
+  ln -sfn /sys/bus/i2c/devices/2-002c/default_settings /tmp/amp_default_settings
+  mkdir -p /sys/class/power_supply/ya_pd/device /sys/devices/platform/pcba_ids/pcba_ids_drv
+  echo "husb238_pd" > /sys/class/power_supply/ya_pd/device/name
+  echo "Good" > /sys/class/power_supply/ya_pd/health
+  echo 12000 > /sys/class/power_supply/ya_pd/voltage_now
+  echo 1500 > /sys/class/power_supply/ya_pd/current_now
+  echo '[{"name":"main","assembly":"00000000001"}]' > /sys/devices/platform/pcba_ids/pcba_ids_drv/pcba_ids
 fi
 
 # 8. Configure ALSA (/etc/asound.conf & /tmp/alsa/alsa.conf) for snd-aloop (card 0: Loopback)
@@ -558,6 +612,11 @@ pcm.dmix_spk {
     period_size 1024
     buffer_size 8192
   }
+}
+
+pcm.dmix_speakers {
+  type plug
+  slave.pcm "dmixer"
 }
 
 pcm.speakers {
@@ -612,6 +671,11 @@ pcm.mics {
 }
 
 pcm.dmicarray {
+  type plug
+  slave.pcm "mics"
+}
+
+pcm.multi_capture {
   type plug
   slave.pcm "mics"
 }

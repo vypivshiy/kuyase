@@ -82,7 +82,7 @@ esac
 if [ "${SLUG}" = "unknown" ]; then
   case "${DEV_TYPE_CFG}" in
     cucumber)                                    SLUG="cucumber" ;;
-    bergamot|mini3)                              SLUG="bergamot" ;;
+    bergamot|mini3|yandexmini3|yandexmini_3)     SLUG="bergamot" ;;
     pickle|mini3pro)                             SLUG="pickle" ;;
     orion|station3)                              SLUG="orion" ;;
     plumnc|prune|lite2nc)                        SLUG="plumnc" ;;

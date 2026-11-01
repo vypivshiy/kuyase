@@ -298,6 +298,25 @@ pub fn detect_board_hint_from_filename(name: &str) -> Option<String> {
             return Some(normalize_board_slug(rest));
         }
     }
+    let normalized = normalize_board_slug(&lower);
+    if matches!(
+        normalized.as_str(),
+        "yandexmini"
+            | "yandexmini2"
+            | "yandexmini2nc"
+            | "yandexmicro"
+            | "plum"
+            | "plumnc"
+            | "station2"
+            | "cucumber"
+            | "orion"
+            | "bergamot"
+            | "pickle"
+            | "mango"
+            | "saturn"
+    ) {
+        return Some(normalized);
+    }
     None
 }
 
@@ -352,7 +371,9 @@ pub fn detect_board_from_tree(tree: &RootfsTree) -> String {
         }
     }
 
-    if tree.get("etc/init.d/S61leds_brightness").is_some() {
+    if tree.get("lib/firmware/bergamot-acm8625.cfg").is_some() {
+        "bergamot".to_string()
+    } else if tree.get("etc/init.d/S61leds_brightness").is_some() {
         "yandexmini2".to_string()
     } else if tree.get("boot/yandex-cucumber-i2ctop-overlay.dtb").is_some() {
         "cucumber".to_string()

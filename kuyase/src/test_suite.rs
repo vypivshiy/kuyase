@@ -444,6 +444,30 @@ pub fn run_board_verification(
                     board, st_clk2.clock_segments
                 ));
             }
+            if board == "bergamot" || board == "plum" {
+                adb.shell(
+                    &format!(
+                        "echo 188 > /sys/class/leds/{p}:white:clockA0/brightness && \
+                         echo 212 > /sys/class/leds/{p}:white:clockG3/brightness && \
+                         echo 160 > /sys/class/leds/{p}:white:clockDH/brightness && \
+                         echo 250 > /sys/class/leds/{p}:white:clockDEGREE/brightness",
+                        p = sysfs_prefix
+                    ),
+                    Duration::from_secs(8),
+                )?;
+                let st_clk0 = bridge.request_state()?;
+                if st_clk0.clock_segments.get("a1").copied() != Some(188)
+                    || st_clk0.clock_segments.get("g4").copied() != Some(212)
+                    || st_clk0.clock_segments.get("p3").copied() != Some(160)
+                    || st_clk0.clock_segments.get("deg").copied() != Some(250)
+                {
+                    return Err(format!(
+                        "[{}] Expected 0-indexed clock symlinks (clockA0->a1=188, clockG3->g4=212, clockDH->p3=160, clockDEGREE->deg=250), got {:?}",
+                        board, st_clk0.clock_segments
+                    ));
+                }
+            }
+
             println!(
                 "[{}] 7-segment clock display ('19:30°' + custom PWM segments) verified!",
                 board

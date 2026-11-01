@@ -1684,9 +1684,13 @@ pub fn builtin_guest_dir_entries(abs_dir: &str, board_slug: &str) -> Vec<String>
                 "orion" => "orion",
                 "cucumber" => "cucumber",
                 "yandexmini2" | "yandexmini2nc" => "mini2",
+                "bergamot" => "bergamot",
+                "pickle" => "pickle",
                 "plum" | "plumnc" => "plum",
                 "station2" => "station2",
-                "yandexmicro" => "lite",
+                "yandexmicro" => "micro",
+                "mango" => "mango",
+                "saturn" => "saturn",
                 _ => "led",
             };
             return vec![

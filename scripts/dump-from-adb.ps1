@@ -55,7 +55,7 @@ if ($ModelRaw -match "prune") {
 } else {
     switch -Regex ($DevTypeCfg) {
         "^cucumber$" { $Slug = "cucumber"; break }
-        "^(bergamot|mini3)$" { $Slug = "bergamot"; break }
+        "^(bergamot|mini3|yandexmini3|yandexmini_3)$" { $Slug = "bergamot"; break }
         "^(pickle|mini3pro)$" { $Slug = "pickle"; break }
         "^(orion|station3)$" { $Slug = "orion"; break }
         "^(plumnc|prune|lite2nc)$" { $Slug = "plumnc"; break }

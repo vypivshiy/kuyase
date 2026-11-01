@@ -42,7 +42,11 @@ pub fn detect_board_slug_from_probe(dev_type_cfg: &str, model_raw: &str) -> Stri
 
     if model_lc.contains("cucumber") {
         "cucumber".to_string()
-    } else if model_lc.contains("bergamot") {
+    } else if model_lc.contains("bergamot")
+        || model_lc.contains("yandexmini_3")
+        || model_lc.contains("yandexmini3")
+        || model_lc.contains("mini3")
+    {
         "bergamot".to_string()
     } else if model_lc.contains("pickle") {
         "pickle".to_string()
@@ -300,6 +304,14 @@ mod tests {
         assert_eq!(
             detect_board_slug_from_probe("lite1", ""),
             "yandexmicro"
+        );
+        assert_eq!(
+            detect_board_slug_from_probe("bergamot", "yandex,bergamot amlogic,axg"),
+            "bergamot"
+        );
+        assert_eq!(
+            detect_board_slug_from_probe("", "yandex,bergamot amlogic,axg"),
+            "bergamot"
         );
     }
 

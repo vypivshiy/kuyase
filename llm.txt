@@ -46,6 +46,7 @@
 - `yandexmini` (Станция Мини, `YNDX-0004`, 32-bit `armhf`): 6-LED ring via I2C `SN3236` (`0x3c` on `/dev/i2c-0`), `VL53L0X` ToF sensor, 4 mics.
 - `yandexmini2` (Станция Мини 2 с часами, `YNDX-00021`, 32-bit `armhf`): 6-LED ring (`mini2:*:ring1..6`), 7-segment clock (`mini2:white:clock*`), `LTR-308` ALS, 4 mics.
 - `yandexmini2nc` (Станция Мини 2 без часов, `YNDX-00020`, 32-bit `armhf`): 6-LED ring (`mini2:*:ring1..6`), `LTR-308` ALS, 4 mics.
+- `bergamot` (Станция Мини 3, `YNDX-00027`, 32-bit `armhf`): 6-LED panel (`/dev/fb0` or `bergamot:*:ring0..5`, `AW21018`, `ledpatterns/oknix/*.led`), 32-segment clock (`bergamot:white:clock{A..G}{0..3}`, `clockDH`, `clockDL`, `clockDM`, `clockDEGREE`, `AW21036`), `ACM8625P` Class-D amplifier (`2-002c`, `bergamot-acm8625.cfg`), `LTR-308` ALS, USB-C PD (`husb238_pd` `12V`), 3 mics.
 - `yandexmicro` (Станция Лайт, `YNDX-00025`, 32-bit `armhf`): 3-LED ring (`micro:*:ring1..3`), 4 mics.
 - `plum` (Станция Лайт 2 с часами, `yandex,plum`, 32-bit `armhf`): 3-LED ring (`plum:*:ring1..3`), 7-segment clock (`plum:white:clock*`), `LTR-308` ALS, 2 mics.
 - `plumnc` (Станция Лайт 2 без часов, `yandex,prune`, 32-bit `armhf`): 3-LED ring (`plum:*:ring1..3`), `LTR-308` ALS, 2 mics.
@@ -54,7 +55,7 @@
 - `orion` (Станция 3, `YNDX-00055`, 64-bit `aarch64`): 36-LED ring (`/dev/fb2` `name="ring"` or `orion:*:ring0..35` + `orion:ring{A,B,C}:sync`), 12×2 RGBW ambilight (`/dev/fb0` `name="ambilight"`, `12×1` `48 bpp` + 96 sysfs channels `orion:{red,green,blue,white}:ambilight{0..11}{a,b}` + `orion:ambilight{A,B,C}:sync`), `21x12` monochrome LED matrix display (`/dev/fb1` `name="YNDX LED screen"`, `252` pixels, `756` bytes `24 bpp`, `gowin_led_device.ko`), 4× `ACM8625S` Class-D amplifiers (`3-002d` `woofer`, `3-002e` `lr`, `3-002c` `center`, `2-002c` `us`), separate Ultrasound TDM-A (`hw:0,0` / `pcm.ultrasound`, `96 kHz` sample rate, `38.4 kHz` carrier), `light-sensor-top` (`LTR-308`) ALS, USB-C PD (`husb238_pd` `20V`), 6 mics.
 
 ### Auto-Profiled (Untested)
-- `bergamot` (Станция Мини 3, `armhf`), `pickle` (Станция Мини 3 Про, `aarch64`), `mango` (Станция Стрит, `armhf`), `saturn` (Умный хаб Яндекса, `armhf`).
+- `pickle` (Станция Мини 3 Про, `aarch64`), `mango` (Станция Стрит, `armhf`), `saturn` (Умный хаб Яндекса, `armhf`).
 
 ### Unsupported Devices
 - Android / YaOS devices (`tulip-d1` Станция 1, `yandexstation_2` Станция Макс / Макс с Zigbee, Станция Дуо Макс, ТВ Станции) are not supported.

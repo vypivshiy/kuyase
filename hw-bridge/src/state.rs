@@ -88,6 +88,11 @@ impl BoardProfile {
                 }
             } else if Path::new("/sys/class/leds/station2:red:ring0").exists() {
                 "station2".to_string()
+            } else if Path::new("/sys/class/leds/bergamot:red:ring0").exists()
+                || Path::new("/sys/class/leds/bergamot:white:clock-a1").exists()
+                || Path::new("/lib/firmware/bergamot-acm8625.cfg").exists()
+            {
+                "bergamot".to_string()
             } else if Path::new("/sys/class/leds/mini2:red:ring0").exists()
                 || Path::new("/sys/class/leds/mini2:red:ring1").exists()
                 || Path::new("/etc/init.d/S61leds_brightness").exists()
@@ -146,7 +151,7 @@ impl BoardProfile {
                 ),
                 "bergamot" => (
                     "bergamot".to_string(),
-                    "Яндекс Станция Мини 3 (bergamot)".to_string(),
+                    "Яндекс Станция Мини 3 (YNDX-00027 / bergamot)".to_string(),
                     "bergamot".to_string(),
                     6,
                     0,

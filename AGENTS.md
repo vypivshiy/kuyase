@@ -19,7 +19,7 @@
    cargo build --release -p qemu-hw-bridge --target armv7-unknown-linux-musleabihf
    cp -f target/armv7-unknown-linux-musleabihf/release/qemu-hw-bridge guest-init/bin/qemu-hw-bridge
    ```
-   Бинарник всегда собирается статически под 32-битный таргет `armv7-unknown-linux-musleabihf` (линкер `rust-lld` задан в `.cargo/config.toml` и `hw-bridge/.cargo/config.toml`), чтобы один исполняемый файл работал и на 32-битных (`yandexmini`, `yandexmini2`, `yandexmini2nc`, `yandexmicro`, `plum`, `plumnc`, `station2`), и на 64-битных (`cucumber`, `orion`) образах через опцию ядра Linux `CONFIG_COMPAT=y`.
+   Бинарник всегда собирается статически под 32-битный таргет `armv7-unknown-linux-musleabihf` (линкер `rust-lld` задан в `.cargo/config.toml` и `hw-bridge/.cargo/config.toml`), чтобы один исполняемый файл работал и на 32-битных (`yandexmini`, `yandexmini2`, `yandexmini2nc`, `bergamot`, `yandexmicro`, `plum`, `plumnc`, `station2`), и на 64-битных (`cucumber`, `orion`) образах через опцию ядра Linux `CONFIG_COMPAT=y`.
 2. **Снятие дампа по сетевому ADB и сборка гостевого образа в userspace**:
    ```bash
    # Снятие чистого rootfs.tar.gz с физической колонки по TCP :5555 встроенным Rust ADB-клиентом:
@@ -52,7 +52,7 @@
   - В регистрах `0x26..0x37` бит `0` (`OUT_EN`) включает канал, биты `2:1` (`SL`) делят яркость на `1`, `2`, `3` или `4`. При программном отключении (`0x00 bit 0 = 0`) или отключении канала (`OUT_EN = 0`) действует блокировка `Stealth Lock`. Запись в `0x4a` сбрасывает все регистры чипа в `0x00`.
 - **Декомпозиция периферии через трейты (`hw-bridge/src/devices.rs`)**:
   - Все аппаратные различия плат инкапсулированы в 4 доменных трейтах внутри `BoardPeripherals`: `LedRingDevice` (`Sn3236I2cRing`, `SysfsFbLedRing`), `AuxLightDevice` (`OrionAmbilightDevice`, `LogoSysfsFbDevice`, `NullAuxLight`), `FrontDisplayDevice` (`SegmentClockSysfsDisplay`, `OrionMatrix21x12Display`, `NullFrontDisplay`) и `AudioSubsystemDevice` (`OrionQuadAcm8625Audio`, `GenericAlsaAudio`). Не добавляй платформенные ветвления `if board_slug == ...` в `bridge_server.rs` или `leds.rs`.
-- **Светодиоды `sysfs` и `framebuffer` (`yandexmini2`, `yandexmini2nc`, `yandexmicro`, `plum`, `plumnc`, `station2`, `cucumber`, `orion`)**:
+- **Светодиоды `sysfs` и `framebuffer` (`yandexmini2`, `yandexmini2nc`, `bergamot`, `yandexmicro`, `plum`, `plumnc`, `station2`, `cucumber`, `orion`)**:
   - Запись в `/sys/class/leds/<prefix>:*:ring*/brightness` при активном триггере `[ledfb-ring]` должна отклоняться и инкрементировать `led_trigger_conflict_count` (`Trigger Conflict`). Для прямого управления через `sysfs` триггер предварительно переключается в `none`.
   - На `orion` (Яндекс Станция 3) раскладка фреймбуферов определяется по `/sys/class/graphics/fb*/name`: `/dev/fb0` — `ambilight` (`12×1`, `48 bpp` + 96 каналов `orion:{red,green,blue,white}:ambilight{0..11}{a,b}`), `/dev/fb1` — `YNDX LED screen` (`21×12`, `24 bpp`, `756 Б` монохромной матрицы `gowin_led_device`), `/dev/fb2` — `ring` (`36×1`, `24 bpp`). Четыре усилителя `ACM8625S` (`2-002c` `us`, `3-002c` `center`, `3-002d` `woofer`, `3-002e` `lr`) конфигурируются через `settings_file`, а ультразвук выводится на отдельный TDM `pcm.ultrasound` (`96 кГц`, несущая `38.4 кГц`).
 - **Локальный IPC стека Quasar (`hw-bridge/src/ipc.rs`, `hw-bridge/src/proto.rs`)**:
