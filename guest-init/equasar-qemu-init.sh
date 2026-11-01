@@ -354,7 +354,8 @@ mkdir -p /sys/class/leds /sys/class/graphics/fb0 /sys/class/graphics/fb1 /sys/cl
 # Luna reads /sys/class/graphics/fbN/{virtual_size,bits_per_pixel,stride} on
 # framebuffer-driven boards. Keep the geometry next to the board profile.
 write_fb_geom() {
-  # $4 is the pixel depth; the real Mini 3 ring is 24 bpp, the older boards 32.
+  # $4 is the pixel depth: 24 bpp for the ring framebuffers the emulator
+  # reads as packed RGB (Mini 3, Station 2, Station 3), 32 for the older panels.
   _d="/sys/class/graphics/$1"; _w="$2"; _h="${3:-1}"; _bpp="${4:-32}"
   printf "%s,%s\n" "$_w" "$_h" > "$_d/virtual_size"
   echo "$_bpp" > "$_d/bits_per_pixel"
@@ -378,7 +379,7 @@ else
   echo "ring" > /sys/class/graphics/fb0/name
   echo "YNDX LED screen" > /sys/class/graphics/fb1/name
   case "$BOARD" in
-    station2) write_fb_geom fb0 89 ;;
+    station2) write_fb_geom fb0 89 1 24 ;;
     cucumber) write_fb_geom fb0 30 ;;
     bergamot) write_fb_geom fb0 6 1 24 ;;
   esac
