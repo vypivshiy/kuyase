@@ -200,12 +200,30 @@ pub fn discover_guest_images(root: &Path) -> Vec<(String, PathBuf)> {
             continue;
         };
         if name.ends_with("-system.ext4") && !name.ends_with("-system-orig.ext4") {
-            let board = name.trim_end_matches("-system.ext4").to_string();
+            let board = normalize_board_slug(name.trim_end_matches("-system.ext4"));
             found.push((board, path));
         }
     }
     found.sort_by(|a, b| a.0.cmp(&b.0));
     found
+}
+
+fn find_board_image_in_work_dir(work_dir: &Path, input: &str) -> Option<(String, PathBuf)> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    let slug = normalize_board_slug(trimmed);
+    let raw = trimmed.to_ascii_lowercase().replace(' ', "-");
+    let raw_img = work_dir.join(format!("{}-system.ext4", raw));
+    if raw_img.is_file() {
+        return Some((slug, raw_img));
+    }
+    let img = work_dir.join(format!("{}-system.ext4", slug));
+    if img.is_file() {
+        return Some((slug, img));
+    }
+    None
 }
 
 pub fn resolve_board_and_image(
@@ -216,19 +234,11 @@ pub fn resolve_board_and_image(
     if let Some(req) = requested_board {
         let trimmed = req.trim();
         if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("auto") {
-            // An exact image name wins over alias normalisation: boards such as
-            // yandexmini2nc / plumnc ship their own image and would otherwise be
-            // folded into the base profile.
-            let raw = trimmed.trim().to_ascii_lowercase().replace(' ', "-");
-            let raw_img = work_dir.join(format!("{}-system.ext4", raw));
-            if raw_img.is_file() {
-                return Ok((raw, raw_img));
+            if let Some(found) = find_board_image_in_work_dir(&work_dir, trimmed) {
+                return Ok(found);
             }
             let slug = normalize_board_slug(trimmed);
             let img = work_dir.join(format!("{}-system.ext4", slug));
-            if img.is_file() {
-                return Ok((slug, img));
-            }
             return Err(format!(
                 "Guest Image not found for board '{}': expected {}",
                 slug,
@@ -239,12 +249,8 @@ pub fn resolve_board_and_image(
 
     let last_board_file = work_dir.join(".last-board");
     if let Ok(last) = fs::read_to_string(&last_board_file) {
-        let slug = normalize_board_slug(last.trim());
-        if !slug.is_empty() {
-            let img = work_dir.join(format!("{}-system.ext4", slug));
-            if img.is_file() {
-                return Ok((slug, img));
-            }
+        if let Some(found) = find_board_image_in_work_dir(&work_dir, &last) {
+            return Ok(found);
         }
     }
 
@@ -307,8 +313,8 @@ impl SessionConfig {
 
         Ok(Self {
             root_dir: root.to_path_buf(),
-            board: slug,
-            board_cmdline: "auto".to_string(),
+            board: slug.clone(),
+            board_cmdline: slug,
             mode: "stub".to_string(),
             snapshot: false,
             persist_data: data_img_exists || env_persist,
@@ -686,5 +692,55 @@ impl EmulatorSession {
 impl Drop for EmulatorSession {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_board_and_image_preserves_canonical_slug_and_nc_variants() {
+        let tmp = std::env::temp_dir().join(format!(
+            "kuyase_resolve_board_test_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        let work = tmp.join("work");
+        fs::create_dir_all(&work).unwrap();
+
+        let mini2_img = work.join("yandexmini2-system.ext4");
+        let mini2nc_img = work.join("yandexmini2nc-system.ext4");
+        let plumnc_img = work.join("plumnc-system.ext4");
+        let alias_img = work.join("mini1-system.ext4");
+        fs::write(&mini2_img, b"dummy").unwrap();
+        fs::write(&mini2nc_img, b"dummy").unwrap();
+        fs::write(&plumnc_img, b"dummy").unwrap();
+        fs::write(&alias_img, b"dummy").unwrap();
+
+        // Exact nc variants resolve to their own image and canonical slug
+        let (slug, path) = resolve_board_and_image(&tmp, Some("yandexmini2nc")).unwrap();
+        assert_eq!(slug, "yandexmini2nc");
+        assert_eq!(path, mini2nc_img);
+
+        let (slug, path) = resolve_board_and_image(&tmp, Some("plumnc")).unwrap();
+        assert_eq!(slug, "plumnc");
+        assert_eq!(path, plumnc_img);
+
+        // Aliases for nc variants also resolve to the canonical slug and image
+        let (slug, path) = resolve_board_and_image(&tmp, Some("mini2nc")).unwrap();
+        assert_eq!(slug, "yandexmini2nc");
+        assert_eq!(path, mini2nc_img);
+
+        let (slug, path) = resolve_board_and_image(&tmp, Some("prune")).unwrap();
+        assert_eq!(slug, "plumnc");
+        assert_eq!(path, plumnc_img);
+
+        // An image named after an alias still resolves to a canonical board_slug
+        let (slug, path) = resolve_board_and_image(&tmp, Some("mini1")).unwrap();
+        assert_eq!(slug, "yandexmini");
+        assert_eq!(path, alias_img);
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
