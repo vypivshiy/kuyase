@@ -216,6 +216,14 @@ pub fn resolve_board_and_image(
     if let Some(req) = requested_board {
         let trimmed = req.trim();
         if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("auto") {
+            // An exact image name wins over alias normalisation: boards such as
+            // yandexmini2nc / plumnc ship their own image and would otherwise be
+            // folded into the base profile.
+            let raw = trimmed.trim().to_ascii_lowercase().replace(' ', "-");
+            let raw_img = work_dir.join(format!("{}-system.ext4", raw));
+            if raw_img.is_file() {
+                return Ok((raw, raw_img));
+            }
             let slug = normalize_board_slug(trimmed);
             let img = work_dir.join(format!("{}-system.ext4", slug));
             if img.is_file() {
