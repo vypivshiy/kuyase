@@ -207,11 +207,12 @@ pub fn build_yio_audio_frame_with_format(
     seq: u64,
     wire_format: QuasarWireFormat,
 ) -> Vec<u8> {
-    let n_samples = 256usize;
+    // One frame is emitted every 40 ms: at 16 kHz this is 640 samples.
+    let n_samples = 640usize;
     let mut base_samples = vec![0i16; n_samples + 16];
     let amp = ((target_rms as f32) * 1.414).min(28_000.0);
     for (i, slot) in base_samples.iter_mut().enumerate() {
-        let t = (seq * 256 + i as u64) as f32;
+        let t = (seq * n_samples as u64 + i as u64) as f32;
         // Broadband multi-tone signal with rich high-frequency slope for TDOA cross-correlation
         let v = (t * 0.42).sin() * 0.55 + (t * 1.13).cos() * 0.30 + (t * 2.31).sin() * 0.15;
         *slot = (v * amp) as i16;
@@ -659,6 +660,18 @@ pub(crate) fn decode_hex(hex: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn yio_frame_contains_40ms_at_16khz() {
+        let frame = build_yio_audio_frame_with_format(0.0, 60, 0, QuasarWireFormat::LegacyDirect);
+        let payload = pb_bytes(&frame[4..], QuasarMessageType::IO_AUDIO_CHANNELS_DATA).unwrap();
+        let channels = IOAudioChannelsData::decode(payload).unwrap();
+        assert_eq!(channels.channels.len(), 5);
+        for channel in channels.channels {
+            assert_eq!(channel.sample_rate, 16_000);
+            assert_eq!(channel.data.len(), 640 * 2);
+        }
+    }
 
     fn pb_field<'a>(buf: &'a [u8], wanted: u32) -> Option<PbField<'a>> {
         let mut pos = 0usize;
