@@ -5,6 +5,7 @@ use crate::proto::{
     build_file_player_handshake_response_packet, build_yio_audio_frame_with_format,
     decode_quasar_io_control_packet, decode_quasar_remoting_packet_with_format,
     frame_quasar_packet, DecodedIoHubPacket, DecodedRemoting, QuasarMessage, QuasarWireFormat,
+    YIO_AUDIO_FRAME_MS,
 };
 use crate::state::{AliceState, BridgeState};
 pub use crate::glagol::spawn_glagold_ipc_server;
@@ -59,8 +60,14 @@ pub fn spawn_yio_audio_server(state: Arc<BridgeState>) {
                         break;
                     }
                     seq = seq.wrapping_add(1);
-                    next_frame += Duration::from_millis(40);
-                    thread::sleep(next_frame.saturating_duration_since(Instant::now()));
+                    let frame_interval = Duration::from_millis(YIO_AUDIO_FRAME_MS);
+                    next_frame += frame_interval;
+                    let now = Instant::now();
+                    if now.saturating_duration_since(next_frame) > frame_interval {
+                        next_frame = now;
+                    } else {
+                        thread::sleep(next_frame.saturating_duration_since(now));
+                    }
                 }
             });
         }

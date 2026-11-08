@@ -201,14 +201,18 @@ pub fn build_file_player_handshake_response_packet(wire_format: QuasarWireFormat
     frame_quasar_packet(&qmsg)
 }
 
+pub const YIO_AUDIO_SAMPLE_RATE: u32 = 16_000;
+pub const YIO_AUDIO_FRAME_MS: u64 = 40;
+pub const YIO_AUDIO_FRAME_SAMPLES: usize =
+    (YIO_AUDIO_SAMPLE_RATE as usize * YIO_AUDIO_FRAME_MS as usize) / 1000;
+
 pub fn build_yio_audio_frame_with_format(
     doa_deg: f32,
     target_rms: u16,
     seq: u64,
     wire_format: QuasarWireFormat,
 ) -> Vec<u8> {
-    // One frame is emitted every 40 ms: at 16 kHz this is 640 samples.
-    let n_samples = 640usize;
+    let n_samples = YIO_AUDIO_FRAME_SAMPLES;
     let mut base_samples = vec![0i16; n_samples + 16];
     let amp = ((target_rms as f32) * 1.414).min(28_000.0);
     for (i, slot) in base_samples.iter_mut().enumerate() {
@@ -256,7 +260,7 @@ pub fn build_yio_audio_frame_with_format(
             is_for_recognition: false,
             legacy_doa_float: None,
             doa_angle: None,
-            sample_rate: 16000,
+            sample_rate: YIO_AUDIO_SAMPLE_RATE,
             format: IOAudioChannelData::FORMAT_PCM,
         });
     }
@@ -272,7 +276,7 @@ pub fn build_yio_audio_frame_with_format(
         is_for_recognition: true,
         legacy_doa_float: Some(doa_deg),
         doa_angle: Some(doa_deg as f64),
-        sample_rate: 16000,
+        sample_rate: YIO_AUDIO_SAMPLE_RATE,
         format: IOAudioChannelData::FORMAT_PCM,
     });
 
@@ -662,7 +666,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn yio_frame_contains_40ms_at_16khz() {
+    fn test_yio_frame_contains_40ms_at_16khz() {
         let frame = build_yio_audio_frame_with_format(0.0, 60, 0, QuasarWireFormat::LegacyDirect);
         let payload = pb_bytes(&frame[4..], QuasarMessageType::IO_AUDIO_CHANNELS_DATA).unwrap();
         let channels = IOAudioChannelsData::decode(payload).unwrap();
