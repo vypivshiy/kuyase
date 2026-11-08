@@ -7,6 +7,7 @@
 - [`DUMP_GUIDE.md`](./DUMP_GUIDE.md): Снятие `rootfs.tar.gz` по сетевому ADB (`:5555`) автономными скриптами (`scripts/dump-from-adb.sh` / `.ps1`), вручную через `adb` или встроенным клиентом `kuyase dump`. Читай при изменении `kuyase/src/adb.rs`, `kuyase/src/dumper.rs`, `kuyase/src/archive_formats.rs`, `kuyase/src/rootfs_tree.rs` или `kuyase/src/image_builder.rs`.
 - [`README.md`](./README.md): Быстрый старт, команды сборки и запуска нативного десктопного приложения и CLI (`run --headless`, `test`, `dump`, `prepare`), таблицы проверенных и непротестированных плат, матрица эмулируемой периферии и работа мок-сервера IPC Quasar.
 - [`tests_e2e/README.md`](./tests_e2e/README.md): Сквозные E2E-тесты установки и работы сторонних пакетов (`yam`, `luna`, `station.airplay`) и вендорского стека Quasar по всей линейке плат.
+- [`docs/agents/pr-checklist.md`](./docs/agents/pr-checklist.md): Чеклист подготовки и код-ревью Pull Request для LLM-агентов (единые константы протокола и таймингов, монотонный дедлайн с `lag cap`, именование тестов `test_`, кросс-компиляция `qemu-hw-bridge`, структура описания PR). Читай перед созданием, обновлением или ревью PR.
 
 ## Пайплайн сборки, подготовки образов и верификации (критично)
 
@@ -57,6 +58,7 @@
   - На `orion` (Яндекс Станция 3) раскладка фреймбуферов определяется по `/sys/class/graphics/fb*/name`: `/dev/fb0` — `ambilight` (`12×1`, `48 bpp` + 96 каналов `orion:{red,green,blue,white}:ambilight{0..11}{a,b}`), `/dev/fb1` — `YNDX LED screen` (`21×12`, `24 bpp`, `756 Б` монохромной матрицы `gowin_led_device`), `/dev/fb2` — `ring` (`36×1`, `24 bpp`). Четыре усилителя `ACM8625S` (`2-002c` `us`, `3-002c` `center`, `3-002d` `woofer`, `3-002e` `lr`) конфигурируются через `settings_file`, а ультразвук выводится на отдельный TDM `pcm.ultrasound` (`96 кГц`, несущая `38.4 кГц`).
 - **Локальный IPC стека Quasar (`hw-bridge/src/ipc.rs`, `hw-bridge/src/proto.rs`)**:
   - Все сокеты (`aliced` `:9875`, `yio_audio` `:9850`, `iohub_services` `:9903`) используют фрейминг `[u32_le_len][QuasarMessage protobuf]` без внешних protobuf-зависимостей.
+  - Параметры потока виртуальной микрофонной решётки `yio_audio` (`:9850`) задаются едиными константами в `hw-bridge/src/proto.rs` (`YIO_AUDIO_SAMPLE_RATE = 16_000`, `YIO_AUDIO_FRAME_MS = 40`, `YIO_AUDIO_FRAME_SAMPLES = 640`) и переиспользуются в `hw-bridge/src/ipc.rs` без дублирования литералов. Цикл отправки планирует кадры от монотонного дедлайна (`Instant`) и сбрасывает `next_frame = now` при отставании свыше одного интервала кадра (`lag cap`), исключая как накопление дрейфа, так и залповую досылку пакетов после паузы чтения или просадки планировщика QEMU TCG.
   - Инжекция голоса (`HostCommand::InjectVoice`) открывает окно перехвата `1680 мс` (`Hijack Window`): получение `CANCEL_DIALOG_AND_CLEAR_QUEUE` (`6`) или `STOP_TTS` (`14`) на `:9875` подавляет штатный ответ Алисы и инкрементирует `aliced_hijack_count`.
 - **Сквозные E2E-тесты (`tests_e2e/`)**:
   - В `tests_e2e/` запрещено писать собственные TCP/ADB-клиенты к эмулятору (`BridgeTcpClient`, `AdbTcpClient`) или вручную воспроизводить шаги установки пакетов вместо запуска оригинальных `install.sh` / `install.ps1`. Все гостевые проверки выполняются исключительно через `kuyase run --headless --board <board> --snapshot --exec "<cmd>"` (где сам `kuyase` контролирует код возврата, `ipc_error_count == 0` и `led_trigger_conflict_count == 0`).
@@ -77,3 +79,7 @@ Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `
 ### Domain docs
 
 Single-context layout (`CONTEXT.md` and `docs/adr/` at the repo root). See `docs/agents/domain.md`.
+
+### Pull requests
+
+Authoring, updating, and reviewing pull requests. See `docs/agents/pr-checklist.md`.
