@@ -13,7 +13,7 @@ use std::net::TcpListener;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub fn spawn_yio_audio_server(state: Arc<BridgeState>) {
     thread::spawn(move || {
@@ -42,6 +42,7 @@ pub fn spawn_yio_audio_server(state: Arc<BridgeState>) {
                 }
                 let _ = s.set_write_timeout(Some(Duration::from_millis(1000)));
                 let mut seq = 0u64;
+                let mut next_frame = Instant::now();
                 loop {
                     let doa = st.doa_angle.load(Ordering::Relaxed) as f32;
                     let muted = st.mics_muted.load(Ordering::Relaxed);
@@ -58,7 +59,8 @@ pub fn spawn_yio_audio_server(state: Arc<BridgeState>) {
                         break;
                     }
                     seq = seq.wrapping_add(1);
-                    thread::sleep(Duration::from_millis(40));
+                    next_frame += Duration::from_millis(40);
+                    thread::sleep(next_frame.saturating_duration_since(Instant::now()));
                 }
             });
         }
