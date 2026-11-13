@@ -28,5 +28,6 @@ KUYASE_E2E_BOARD=station2 python -m unittest tests_e2e/test_03_airplay.py -v
 | Переменная | Назначение |
 | :--- | :--- |
 | `KUYASE_E2E_BOARD` | Профиль платы (например, `station2`, `cucumber`, `orion`) или список через запятую. По умолчанию обходит все `work/*-system.ext4`. |
+| `KUYASE_BIN` | Явный путь к исполняемому файлу `kuyase` или `kuyase-headless` (по умолчанию ищет `kuyase[.exe]` и `kuyase-headless[.exe]` в `target/release/`, `target-headless/release/`, `Releases/` и корне репозитория). |
 | `YAM_REPO_DIR` | Путь к локальной рабочей копии репозитория `yam` (по умолчанию `../yam`, если каталог существует, иначе берётся из `nyakokitsu/yam`). |
 | `KUYASE_AIRPLAY_PKG` | Путь к локальному пакету `station-airplay-*.yampkg` для `test_03_airplay.py` (по умолчанию скачивается из `ryysel/Station-airplay` Releases). |

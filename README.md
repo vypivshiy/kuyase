@@ -11,6 +11,8 @@
 > Репозиторий содержит только исходный код Cargo Workspace (`protocol`, `hw-bridge`, `kuyase`), гостевой инициализатор и конфигурацию ядра Linux. Дамп прошивки необходимо снять со своей колонки по ADB (см. [`DUMP_GUIDE.md`](./DUMP_GUIDE.md)), собрать или взять из тематических ресурсов.
 
 ![](assets/GUI.png)
+![](assets/GUI2.png)
+![](assets/GUI3.png)
 
 https://github.com/user-attachments/assets/0a25b0c4-0914-45d7-bdc7-101630d444c2
 
@@ -18,7 +20,7 @@ https://github.com/user-attachments/assets/0a25b0c4-0914-45d7-bdc7-101630d444c2
 
 ## Быстрый старт (готовая портативная сборка)
 
-Для запуска готовой сборки из [**GitHub Releases**](https://github.com/vypivshiy/kuyase/releases) (`kuyase-win64-portable.zip` для Windows x64 или `kuyase-linux64-portable.tar.gz` для Linux x64) не требуется устанавливать Rust, WSL2 или `adb` — пропатченное гостевое ядро `kuyase-kernel-arm64.img`, гостевой инициализатор и демон `qemu-hw-bridge` уже включены в архив.
+Для запуска готовой сборки из [**GitHub Releases**](https://github.com/vypivshiy/kuyase/releases) (`kuyase-win64-portable.zip` для Windows x64 или `kuyase-linux64-portable.tar.gz` для Linux x64; для CI и E2E-тестов без графического окружения — минимальные архивы `kuyase-headless-win64.zip` и статический `kuyase-headless-linux64.tar.gz`) не требуется устанавливать Rust, WSL2 или `adb` — пропатченное гостевое ядро `kuyase-kernel-arm64.img`, гостевой инициализатор и демон `qemu-hw-bridge` уже включены в архив.
 
 ### 1. Установка QEMU
 
@@ -65,8 +67,15 @@ https://github.com/user-attachments/assets/0a25b0c4-0914-45d7-bdc7-101630d444c2
 cargo build --release -p qemu-hw-bridge --target armv7-unknown-linux-musleabihf
 cp -f target/armv7-unknown-linux-musleabihf/release/qemu-hw-bridge guest-init/bin/qemu-hw-bridge
 
-# 2. Сборка нативного приложения и CLI-раннера kuyase:
+# 2. Сборка нативного приложения (GUI + CLI) kuyase:
 cargo build --release -p kuyase
+
+# 3. Опционально: сборка легковесного headless-раннера без GUI (без зависимости eframe):
+cargo build --release -p kuyase --no-default-features
+
+# 4. Опционально: статическая кросс-компиляция Linux x86_64 headless-раннера (musl, работает в любых CI-контейнерах):
+rustup target add x86_64-unknown-linux-musl
+cargo build --release -p kuyase --no-default-features --target x86_64-unknown-linux-musl
 ```
 
 ### 3. Пересборка гостевого ядра (Linux / WSL2)
