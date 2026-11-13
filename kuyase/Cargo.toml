@@ -4,6 +4,10 @@ version = "1.4.0"
 edition = "2021"
 description = "KUYASE Native Smart Speaker Emulator, ADB Client, and Verification Suite"
 
+[features]
+default = ["gui"]
+gui = ["dep:eframe"]
+
 [dependencies]
 protocol = { path = "../protocol" }
 serde = { version = "1.0", features = ["derive"] }
@@ -11,4 +15,4 @@ serde_json = "1.0"
 flate2 = "1.1"
 tar = "0.4"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
-eframe = "0.30"
+eframe = { version = "0.30", optional = true }

@@ -1,6 +1,7 @@
 use kuyase::adb::AdbClient;
 use kuyase::bridge_client::BridgeClient;
 use kuyase::dumper::dump_from_adb;
+#[cfg(feature = "gui")]
 use kuyase::gui::run_gui;
 use kuyase::image_builder::prepare_images;
 use kuyase::session::{
@@ -43,6 +44,19 @@ fn print_usage() {
                --listen-all          Bind forwarded ports to 0.0.0.0 instead of 127.0.0.1\n\
                --lan-tap <ifname>    Attach second virtio NIC (wlan0 in guest) to host TAP interface\n\
                --lan-mac <mac>       MAC address for LAN TAP NIC (default: 52:4b:59:00:00:01)\n\
+               --mic-rate <hz>       Virtual mic yio_audio (:9850) sample rate (default: 16000)\n\
+               --mic-frame-ms <ms>   Virtual mic frame duration in ms (default: 40 = 640 samples)\n\
+               --mic-interval-ms <m> Virtual mic packet send interval in ms (default: mic-frame-ms)\n\
+               --mic-no-lag-cap      Disable deadline lag cap on yio_audio (:9850)\n\
+               --mic-idle-rms <rms>  Virtual mic idle background RMS (default: 60)\n\
+               --mic-burst-rms <rms> Virtual mic speech burst RMS (default: 2400)\n\
+               --voice-recognition-delay-ms <ms> Delay before recognized phrase event (default: 300)\n\
+               --voice-burst-ms <ms> Duration of mic burst on voice injection (default: 650)\n\
+               --hijack-window-ms <m> Dialog hijack window duration in ms (default: 1680)\n\
+               --audio-rate <hz>     Speaker snd-aloop capture sample rate (default: 48000)\n\
+               --audio-chunk-ms <ms> Speaker snd-aloop capture chunk duration in ms (default: 20)\n\
+               --audio-gate-rms <r>  Speaker silence gate RMS threshold, 0=continuous (default: 5)\n\
+               --audio-hangover-ms <m> Speaker pause hangover duration in ms (default: 400)\n\
            -h, --help                Show this help message"
     );
 }
@@ -66,9 +80,23 @@ struct CliOptions {
     port_offset: u16,
     bridge_port: u16,
     adb_port: u16,
+    audio_config: Option<protocol::AudioConfig>,
 }
 
 fn parse_args() -> Result<CliOptions, String> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    parse_args_from(&args)
+}
+
+fn parse_u32_flag(args: &[String], idx: usize, flag: &str) -> Result<u32, String> {
+    let Some(val) = args.get(idx + 1) else {
+        return Err(format!("missing value for {}", flag));
+    };
+    val.parse::<u32>()
+        .map_err(|_| format!("invalid {}: {}", flag, val))
+}
+
+fn parse_args_from(args: &[String]) -> Result<CliOptions, String> {
     let mut opts = CliOptions {
         subcommand: String::new(),
         board: None,
@@ -87,9 +115,10 @@ fn parse_args() -> Result<CliOptions, String> {
         port_offset: 0,
         bridge_port: 18091,
         adb_port: 15555,
+        audio_config: None,
     };
+    let mut explicit_mic_interval = false;
 
-    let args: Vec<String> = env::args().skip(1).collect();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -214,6 +243,89 @@ fn parse_args() -> Result<CliOptions, String> {
                     .map_err(|_| format!("invalid --adb-port: {}", val))?;
                 i += 2;
             }
+            "--mic-rate" => {
+                let v = parse_u32_flag(args, i, "--mic-rate")?;
+                opts.audio_config.get_or_insert_with(Default::default).mic_sample_rate = v;
+                i += 2;
+            }
+            "--mic-frame-ms" => {
+                let v = parse_u32_flag(args, i, "--mic-frame-ms")?;
+                let cfg = opts.audio_config.get_or_insert_with(Default::default);
+                cfg.mic_frame_ms = v;
+                if !explicit_mic_interval {
+                    cfg.mic_send_interval_ms = v;
+                }
+                i += 2;
+            }
+            "--mic-interval-ms" => {
+                let v = parse_u32_flag(args, i, "--mic-interval-ms")?;
+                explicit_mic_interval = true;
+                opts.audio_config
+                    .get_or_insert_with(Default::default)
+                    .mic_send_interval_ms = v;
+                i += 2;
+            }
+            "--mic-no-lag-cap" => {
+                opts.audio_config.get_or_insert_with(Default::default).mic_lag_cap = false;
+                i += 1;
+            }
+            "--mic-idle-rms" => {
+                let v = parse_u32_flag(args, i, "--mic-idle-rms")?;
+                opts.audio_config.get_or_insert_with(Default::default).mic_idle_rms = v;
+                i += 2;
+            }
+            "--mic-burst-rms" => {
+                let v = parse_u32_flag(args, i, "--mic-burst-rms")?;
+                opts.audio_config.get_or_insert_with(Default::default).mic_burst_rms = v;
+                i += 2;
+            }
+            "--voice-recognition-delay-ms" => {
+                let v = parse_u32_flag(args, i, "--voice-recognition-delay-ms")?;
+                opts.audio_config
+                    .get_or_insert_with(Default::default)
+                    .recognition_delay_ms = v;
+                i += 2;
+            }
+            "--voice-burst-ms" => {
+                let v = parse_u32_flag(args, i, "--voice-burst-ms")?;
+                opts.audio_config
+                    .get_or_insert_with(Default::default)
+                    .burst_duration_ms = v;
+                i += 2;
+            }
+            "--hijack-window-ms" => {
+                let v = parse_u32_flag(args, i, "--hijack-window-ms")?;
+                opts.audio_config
+                    .get_or_insert_with(Default::default)
+                    .hijack_window_ms = v;
+                i += 2;
+            }
+            "--audio-rate" => {
+                let v = parse_u32_flag(args, i, "--audio-rate")?;
+                opts.audio_config
+                    .get_or_insert_with(Default::default)
+                    .capture_sample_rate = v;
+                i += 2;
+            }
+            "--audio-chunk-ms" => {
+                let v = parse_u32_flag(args, i, "--audio-chunk-ms")?;
+                opts.audio_config
+                    .get_or_insert_with(Default::default)
+                    .capture_chunk_ms = v;
+                i += 2;
+            }
+            "--audio-gate-rms" => {
+                let v = parse_u32_flag(args, i, "--audio-gate-rms")?;
+                opts.audio_config
+                    .get_or_insert_with(Default::default)
+                    .silence_gate_rms = v;
+                i += 2;
+            }
+            "--audio-hangover-ms" => {
+                let v = parse_u32_flag(args, i, "--audio-hangover-ms")?;
+                opts.audio_config.get_or_insert_with(Default::default).hangover_ms = v;
+                i += 2;
+            }
             other if !other.starts_with('-') => {
                 if opts.subcommand == "dump" && opts.target.is_none() {
                     opts.target = Some(other.to_string());
@@ -238,6 +350,10 @@ fn parse_args() -> Result<CliOptions, String> {
         } else {
             "gui".to_string()
         };
+    }
+
+    if let Some(ref mut ac) = opts.audio_config {
+        *ac = ac.sanitized();
     }
 
     Ok(opts)
@@ -290,6 +406,12 @@ fn run_single_headless_board(
     let result = (|| -> Result<(), String> {
         let bridge_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), cfg.bridge_port);
         let bridge = BridgeClient::connect_with_timeout(bridge_addr, bridge_connect_timeout())?;
+
+        if let Some(ref audio_cfg) = opts.audio_config {
+            bridge.send_command(&protocol::HostCommand::SetAudioConfig {
+                config: audio_cfg.clone(),
+            })?;
+        }
 
         let initial_state = bridge.latest_state();
         let refreshed_state = bridge.request_state()?;
@@ -501,6 +623,22 @@ fn run_headless_session(opts: &CliOptions) -> Result<(), String> {
     run_single_headless_board(opts, None, 0)
 }
 
+fn launch_gui_or_error() -> Result<(), String> {
+    #[cfg(feature = "gui")]
+    {
+        let root = resolve_repo_root();
+        run_gui(&root)
+    }
+    #[cfg(not(feature = "gui"))]
+    {
+        eprintln!(
+            "[kuyase] Error: this binary was built without GUI support (headless build); pass `--headless` or use `test`, `dump`, `prepare`."
+        );
+        print_usage();
+        process::exit(2);
+    }
+}
+
 fn main() {
     let opts = match parse_args() {
         Ok(o) => o,
@@ -512,16 +650,12 @@ fn main() {
     };
 
     let res = match opts.subcommand.as_str() {
-        "gui" => {
-            let root = resolve_repo_root();
-            run_gui(&root)
-        }
+        "gui" => launch_gui_or_error(),
         "run" => {
             if opts.headless {
                 run_headless_session(&opts)
             } else {
-                let root = resolve_repo_root();
-                run_gui(&root)
+                launch_gui_or_error()
             }
         }
         "test" => {
@@ -555,5 +689,61 @@ fn main() {
     if let Err(err) = res {
         eprintln!("[kuyase] FAILED: {}", err);
         process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_args_defaults_to_gui_and_requires_headless_for_run() {
+        let empty = parse_args_from(&[]).expect("empty args should parse");
+        assert_eq!(empty.subcommand, "gui");
+        assert!(!empty.headless);
+
+        let run_no_headless =
+            parse_args_from(&["run".to_string()]).expect("`run` should parse");
+        assert_eq!(run_no_headless.subcommand, "run");
+        assert!(!run_no_headless.headless);
+
+        let run_headless = parse_args_from(&[
+            "run".to_string(),
+            "--headless".to_string(),
+            "--board".to_string(),
+            "station2".to_string(),
+            "--snapshot".to_string(),
+        ])
+        .expect("`run --headless` should parse");
+        assert_eq!(run_headless.subcommand, "run");
+        assert!(run_headless.headless);
+        assert_eq!(run_headless.board.as_deref(), Some("station2"));
+        assert_eq!(run_headless.snapshot, Some(true));
+        assert!(run_headless.audio_config.is_none());
+
+        let run_with_audio = parse_args_from(&[
+            "run".to_string(),
+            "--headless".to_string(),
+            "--mic-rate".to_string(),
+            "8000".to_string(),
+            "--mic-frame-ms".to_string(),
+            "20".to_string(),
+            "--mic-no-lag-cap".to_string(),
+            "--hijack-window-ms".to_string(),
+            "2500".to_string(),
+            "--audio-rate".to_string(),
+            "24000".to_string(),
+            "--audio-gate-rms".to_string(),
+            "0".to_string(),
+        ])
+        .expect("audio CLI flags should parse");
+        let ac = run_with_audio.audio_config.expect("audio_config should be populated");
+        assert_eq!(ac.mic_sample_rate, 8_000);
+        assert_eq!(ac.mic_frame_ms, 20);
+        assert_eq!(ac.mic_send_interval_ms, 20);
+        assert!(!ac.mic_lag_cap);
+        assert_eq!(ac.hijack_window_ms, 2500);
+        assert_eq!(ac.capture_sample_rate, 24_000);
+        assert_eq!(ac.silence_gate_rms, 0);
     }
 }

@@ -3,6 +3,7 @@ pub mod archive_formats;
 pub mod bridge_client;
 pub mod dumper;
 pub mod ext_fs;
+#[cfg(feature = "gui")]
 pub mod gui;
 pub mod image_builder;
 pub mod rootfs_tree;

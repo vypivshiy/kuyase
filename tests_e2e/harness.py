@@ -41,20 +41,7 @@ EXPECTED_YAM_PLATFORM: Dict[str, str] = {
 }
 
 # Canonical station hostname (without `qemu-` prefix or `nc` suffix) for Luna auto-detection
-CANONICAL_STATION_HOSTNAME: Dict[str, str] = {
-    "station2": "yandexstation_2",
-    "cucumber": "cucumber",
-    "yandexmini": "yandexmini",
-    "yandexmini2": "yandexmini_2",
-    "yandexmini2nc": "yandexmini_2",
-    "bergamot": "bergamot",
-    "pickle": "pickle",
-    "plum": "plum",
-    "plumnc": "plum",
-    "yandexmicro": "yandexmicro",
-    "mango": "mango",
-    "orion": "orion",
-}
+CANONICAL_STATION_HOSTNAME: Dict[str, str] = EXPECTED_YAM_PLATFORM
 
 # Guest `/bin/sh` shim allowing unmodified host `install.sh` scripts (which invoke
 # `adb devices`, `adb -s "$DEVICE" shell ...`, and `adb -s "$DEVICE" push ...`)
@@ -185,17 +172,32 @@ class _HttpsCacheGateway:
 
 
 def find_kuyase_binary() -> pathlib.Path:
-    exe = "kuyase.exe" if platform.system() == "Windows" else "kuyase"
-    for candidate in (
-        REPO_ROOT / "target" / "release" / exe,
-        REPO_ROOT / "target" / "debug" / exe,
-        REPO_ROOT / "Releases" / exe,
-        REPO_ROOT / exe,
-    ):
-        if candidate.is_file():
-            return candidate
+    env_bin = os.environ.get("KUYASE_BIN", "").strip()
+    if env_bin:
+        p = pathlib.Path(env_bin)
+        if p.is_file():
+            return p
+        raise FileNotFoundError(f"KUYASE_BIN points to non-existent file: {p}")
+
+    is_win = platform.system() == "Windows"
+    exe = "kuyase.exe" if is_win else "kuyase"
+    headless_exe = "kuyase-headless.exe" if is_win else "kuyase-headless"
+    search_dirs = [
+        REPO_ROOT / "target" / "release",
+        REPO_ROOT / "target-headless" / "release",
+        REPO_ROOT / "target" / "x86_64-unknown-linux-musl" / "release",
+        REPO_ROOT / "target" / "debug",
+        REPO_ROOT / "Releases",
+        REPO_ROOT,
+    ]
+    for directory in search_dirs:
+        for name in (exe, headless_exe):
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
     raise FileNotFoundError(
-        "kuyase binary not found; build it first with `cargo build --release -p kuyase`"
+        "kuyase binary not found; build it first with `cargo build --release -p kuyase` "
+        "(or `cargo build --release -p kuyase --no-default-features`)"
     )
 
 
