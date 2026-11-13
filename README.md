@@ -8,13 +8,13 @@
 >[!warning]
 > **Дампы прошивок не входят в репозиторий**
 >
-> Репозиторий содержит только исходный код Cargo Workspace (`protocol`, `hw-bridge`, `kuyase`), гостевой инициализатор и конфигурацию ядра Linux. Дамп прошивки необходимо снять со своей колонки по ADB (см. [`DUMP_GUIDE.md`](./DUMP_GUIDE.md)), собрать или взять из тематических ресурсов.
+> Репозиторий содержит только исходный код Cargo Workspace (`protocol`, `hw-bridge`, `kuyase`), гостевой инициализатор и конфигурацию ядра Linux. Дамп прошивки необходимо снять со своей колонки по ADB (см. [`DUMP_GUIDE.md`](./DUMP_GUIDE.md)), собрать или взять из тематических ресурсов. Например, из сообщества [Yandex Station Extended](https://hackalice.me/)
 
 ![](assets/GUI.png)
 ![](assets/GUI2.png)
 ![](assets/GUI3.png)
 
-https://github.com/user-attachments/assets/0a25b0c4-0914-45d7-bdc7-101630d444c2
+https://github.com/user-attachments/assets/2cb0879f-9d0e-41b3-947c-eb14a6b68496
 
 ---
 
