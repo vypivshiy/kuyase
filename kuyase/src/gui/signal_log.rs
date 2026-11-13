@@ -220,6 +220,19 @@ pub fn describe_host_command(cmd: &HostCommand) -> (SignalCategory, String) {
                 wake_only
             ),
         ),
+        HostCommand::SetAudioConfig { config } => (
+            SignalCategory::Audio,
+            format!(
+                "SetAudioConfig {{ mic: {} Гц / {} мс (int={} мс, lag_cap={}), hijack: {} мс, aloop: {} Гц / {} мс }}",
+                config.mic_sample_rate,
+                config.mic_frame_ms,
+                config.mic_send_interval_ms,
+                config.mic_lag_cap,
+                config.hijack_window_ms,
+                config.capture_sample_rate,
+                config.capture_chunk_ms
+            ),
+        ),
         HostCommand::IpcTest { cmd, text } => {
             if let Some(ref t) = text {
                 (
@@ -278,8 +291,8 @@ pub fn diff_state_transitions(
             events.push((
                 SignalCategory::TtsIpc,
                 format!(
-                    "Перехват диалога в окне 1680 мс (aliced_hijack_count = {})",
-                    next.aliced_hijack_count
+                    "Перехват диалога в окне {} мс (aliced_hijack_count = {})",
+                    next.audio_config.hijack_window_ms, next.aliced_hijack_count
                 ),
             ));
         }
@@ -320,13 +333,18 @@ pub fn diff_state_transitions(
                 format!("Громкость изменена: {}/10", next.volume_level),
             ));
         }
-        if (prev.speaker_rms <= 5 && next.speaker_rms > 5)
-            || (prev.speaker_rms > 5 && next.speaker_rms <= 5)
+        let gate = next.audio_config.silence_gate_rms.max(1);
+        let rate_khz = next.audio_config.capture_sample_rate / 1000;
+        if (prev.speaker_rms <= gate && next.speaker_rms > gate)
+            || (prev.speaker_rms > gate && next.speaker_rms <= gate)
         {
-            let msg = if next.speaker_rms > 5 {
-                format!("Активен аудиопоток 48 кГц (Speaker RMS: {})", next.speaker_rms)
+            let msg = if next.speaker_rms > gate {
+                format!(
+                    "Активен аудиопоток {} кГц (Speaker RMS: {})",
+                    rate_khz, next.speaker_rms
+                )
             } else {
-                "Аудиопоток 48 кГц завершён (Speaker RMS: 0)".to_string()
+                format!("Аудиопоток {} кГц завершён (Speaker RMS: 0)", rate_khz)
             };
             events.push((SignalCategory::Audio, msg));
         }

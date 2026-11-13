@@ -6,8 +6,6 @@ use crate::gui::state::GuiAppState;
 use eframe::egui::{self, Color32, Margin, Pos2, RichText, Stroke, Vec2};
 use std::sync::atomic::Ordering;
 
-pub const HIJACK_WINDOW_MS: u64 = 1680;
-
 pub const LED_PATTERNS: &[(&str, &str)] = &[
     ("", "Авто (по состоянию Quasar)"),
     ("rgb:#6B0FFF", "Фиолетовый (#6B0FFF)"),

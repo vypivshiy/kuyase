@@ -139,10 +139,19 @@ pub fn play_expressive_tts_to_alsa(state: &Arc<BridgeState>, text: &str, expecte
 
 pub fn spawn_alsa_loopback_capture(state: Arc<BridgeState>) {
     thread::spawn(move || loop {
+        let start_gen = state.capture_config_generation.load(Ordering::Relaxed);
+        let init_cfg = state.audio_config();
+        let rate_str = init_cfg.capture_sample_rate.to_string();
+        let chunk_bytes = init_cfg.capture_chunk_bytes();
+        let alsa_dev = if init_cfg.capture_sample_rate == protocol::DEFAULT_CAPTURE_SAMPLE_RATE {
+            "hw:0,1,0"
+        } else {
+            "plughw:0,1,0"
+        };
         let mut cmd = build_aplay_command();
         let Ok(mut child) = cmd
             .args([
-                "-C", "-D", "hw:0,1,0", "-q", "-t", "raw", "-f", "S16_LE", "-r", "48000", "-c",
+                "-C", "-D", alsa_dev, "-q", "-t", "raw", "-f", "S16_LE", "-r", &rate_str, "-c",
                 "2", "-",
             ])
             .stdin(Stdio::null())
@@ -155,38 +164,46 @@ pub fn spawn_alsa_loopback_capture(state: Arc<BridgeState>) {
         };
 
         if let Some(mut stdout) = child.stdout.take() {
-            let mut buf = [0u8; 3840]; // 20 ms at 48kHz 2ch S16_LE
+            let mut buf = vec![0u8; chunk_bytes];
             let mut hangover_chunks = 0u32;
-            while let Ok(n) = stdout.read(&mut buf) {
-                if n == 0 {
-                    break;
+            'capture_loop: loop {
+                let mut filled = 0usize;
+                while filled < chunk_bytes {
+                    match stdout.read(&mut buf[filled..]) {
+                        Ok(0) | Err(_) => break 'capture_loop,
+                        Ok(k) => filled += k,
+                    }
+                    if state.capture_config_generation.load(Ordering::Relaxed) != start_gen {
+                        let _ = child.kill();
+                        break 'capture_loop;
+                    }
                 }
-                let samples = n / 2;
+                let samples = chunk_bytes / 2;
                 let mut sum_sq = 0u64;
-                for chunk in buf[..n].chunks_exact(2) {
+                for chunk in buf.chunks_exact(2) {
                     let s = i16::from_le_bytes([chunk[0], chunk[1]]) as i64;
                     sum_sq += (s * s) as u64;
                 }
-                let rms = if samples > 0 {
-                    ((sum_sq / samples as u64) as f64).sqrt() as u32
-                } else {
-                    0
-                };
+                let rms = ((sum_sq / samples as u64) as f64).sqrt() as u32;
                 state.speaker_rms.store(rms, Ordering::Relaxed);
-                if rms > 5 {
-                    hangover_chunks = 20; // Keep 400 ms of inter-word / punctuation pauses
+                let live_cfg = state.audio_config();
+                let gate_rms = live_cfg.silence_gate_rms;
+                let max_hangover_chunks = live_cfg.hangover_ms / live_cfg.capture_chunk_ms;
+                let pass_gate = gate_rms == 0 || rms > gate_rms;
+                if pass_gate {
+                    hangover_chunks = max_hangover_chunks;
                 }
-                if rms > 5 || hangover_chunks > 0 {
-                    if rms <= 5 {
+                if pass_gate || hangover_chunks > 0 {
+                    if !pass_gate {
                         hangover_chunks = hangover_chunks.saturating_sub(1);
                     }
                     {
                         let mut cap = state.captured_pcm.lock().unwrap();
                         if cap.len() < 4 * 1024 * 1024 {
-                            cap.extend_from_slice(&buf[..n]);
+                            cap.extend_from_slice(&buf);
                         }
                     }
-                    state.broadcast_audio_chunk(buf[..n].to_vec());
+                    state.broadcast_audio_chunk(buf.clone());
                 }
             }
         }

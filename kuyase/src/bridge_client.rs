@@ -16,7 +16,6 @@ struct SharedState {
 }
 
 pub struct BridgeClient {
-    addr: SocketAddr,
     writer: Mutex<TcpStream>,
     state: Arc<(Mutex<SharedState>, Condvar)>,
     ack_queue: Arc<(Mutex<VecDeque<CommandAckPayload>>, Condvar)>,
@@ -121,7 +120,6 @@ impl BridgeClient {
                     });
 
                     return Ok(Self {
-                        addr,
                         writer: Mutex::new(writer_stream),
                         state,
                         ack_queue,
@@ -145,10 +143,6 @@ impl BridgeClient {
         Err(last_err)
     }
 
-    pub fn addr(&self) -> SocketAddr {
-        self.addr
-    }
-
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
     }
@@ -158,12 +152,21 @@ impl BridgeClient {
     }
 
     pub fn send_command(&self, cmd: &HostCommand) -> Result<CommandAckPayload, String> {
-        if !self.is_connected() {
-            return Err("bridge client is disconnected".to_string());
+        match cmd {
+            HostCommand::ClearAudio => {
+                self.captured_pcm.lock().unwrap().clear();
+            }
+            HostCommand::SetAudioConfig { config } => {
+                let prev_rate = self.latest_state().audio_config.capture_sample_rate;
+                if config.sanitized().capture_sample_rate != prev_rate {
+                    self.captured_pcm.lock().unwrap().clear();
+                }
+            }
+            _ => {}
         }
 
-        if matches!(cmd, HostCommand::ClearAudio) {
-            self.captured_pcm.lock().unwrap().clear();
+        if !self.is_connected() {
+            return Err("bridge client is disconnected".to_string());
         }
 
         let seq_before = self.state.0.lock().unwrap().seq;
@@ -228,11 +231,15 @@ impl BridgeClient {
 
     pub fn captured_wav_bytes(&self) -> Vec<u8> {
         let pcm = self.captured_pcm_bytes();
-        build_wav_bytes(&pcm, 48_000, 2)
-    }
-
-    pub fn clear_captured_pcm(&self) {
-        self.captured_pcm.lock().unwrap().clear();
+        let rate = self
+            .latest_state()
+            .audio_config
+            .capture_sample_rate
+            .clamp(
+                protocol::MIN_CAPTURE_SAMPLE_RATE,
+                protocol::MAX_CAPTURE_SAMPLE_RATE,
+            );
+        build_wav_bytes(&pcm, rate, 2)
     }
 
     pub fn set_audio_chunk_sink(&self, sink: Option<mpsc::Sender<Vec<u8>>>) {

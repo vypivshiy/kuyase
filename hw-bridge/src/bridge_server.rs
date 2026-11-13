@@ -107,6 +107,7 @@ pub fn build_state_snapshot(state: &Arc<BridgeState>) -> BridgeStateSnapshot {
         recent_logs: logs,
         maind_logs: maind_tail,
         available_led_patterns: state.available_led_patterns.clone(),
+        audio_config: state.audio_config(),
     }
 }
 
@@ -149,7 +150,9 @@ pub fn handle_host_command(state: &Arc<BridgeState>, cmd: HostCommand) -> GuestP
                             "Button MUTE -> Microphones MUTED (LED ring solid RED: mute_mics.led)",
                         );
                     } else {
-                        state.mic_rms.store(60, Ordering::SeqCst);
+                        state
+                            .mic_rms
+                            .store(state.audio_config().mic_idle_rms, Ordering::SeqCst);
                         state.append_maind_log(
                             "[event_loop_audio_device_input_controller.cpp:129] Unmute microphones",
                         );
@@ -354,6 +357,30 @@ pub fn handle_host_command(state: &Arc<BridgeState>, cmd: HostCommand) -> GuestP
             rms,
             wake_only,
         } => handle_inject_voice(state, phrase, doa_angle, rms, wake_only),
+        HostCommand::SetAudioConfig { config } => {
+            let applied = state.set_audio_config(config);
+            state.log(format!(
+                "AudioConfig updated -> mic={}Hz/{}ms (interval={}ms, lag_cap={}, idle_rms={}, burst_rms={}), dialog={}/{}/{}ms, capture={}Hz/{}ms (gate={}, hangover={}ms)",
+                applied.mic_sample_rate,
+                applied.mic_frame_ms,
+                applied.mic_send_interval_ms,
+                applied.mic_lag_cap,
+                applied.mic_idle_rms,
+                applied.mic_burst_rms,
+                applied.recognition_delay_ms,
+                applied.burst_duration_ms,
+                applied.hijack_window_ms,
+                applied.capture_sample_rate,
+                applied.capture_chunk_ms,
+                applied.silence_gate_rms,
+                applied.hangover_ms,
+            ));
+            GuestPacket::CommandAck {
+                ok: true,
+                error: None,
+                message: None,
+            }
+        }
         HostCommand::IpcTest { cmd, text } => handle_ipc_test(cmd, text),
         HostCommand::PlayTestTone => {
             state.log("Playing 440 Hz test tone to ALSA default -> snd-aloop");

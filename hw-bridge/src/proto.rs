@@ -201,18 +201,20 @@ pub fn build_file_player_handshake_response_packet(wire_format: QuasarWireFormat
     frame_quasar_packet(&qmsg)
 }
 
-pub const YIO_AUDIO_SAMPLE_RATE: u32 = 16_000;
-pub const YIO_AUDIO_FRAME_MS: u64 = 40;
+pub const YIO_AUDIO_SAMPLE_RATE: u32 = protocol::DEFAULT_MIC_SAMPLE_RATE;
+pub const YIO_AUDIO_FRAME_MS: u64 = protocol::DEFAULT_MIC_FRAME_MS as u64;
 pub const YIO_AUDIO_FRAME_SAMPLES: usize =
     (YIO_AUDIO_SAMPLE_RATE as usize * YIO_AUDIO_FRAME_MS as usize) / 1000;
 
-pub fn build_yio_audio_frame_with_format(
+pub fn build_yio_audio_frame_with_params(
     doa_deg: f32,
     target_rms: u16,
     seq: u64,
+    sample_rate: u32,
+    n_samples: usize,
     wire_format: QuasarWireFormat,
 ) -> Vec<u8> {
-    let n_samples = YIO_AUDIO_FRAME_SAMPLES;
+    let n_samples = n_samples.max(16);
     let mut base_samples = vec![0i16; n_samples + 16];
     let amp = ((target_rms as f32) * 1.414).min(28_000.0);
     for (i, slot) in base_samples.iter_mut().enumerate() {
@@ -260,7 +262,7 @@ pub fn build_yio_audio_frame_with_format(
             is_for_recognition: false,
             legacy_doa_float: None,
             doa_angle: None,
-            sample_rate: YIO_AUDIO_SAMPLE_RATE,
+            sample_rate,
             format: IOAudioChannelData::FORMAT_PCM,
         });
     }
@@ -276,7 +278,7 @@ pub fn build_yio_audio_frame_with_format(
         is_for_recognition: true,
         legacy_doa_float: Some(doa_deg),
         doa_angle: Some(doa_deg as f64),
-        sample_rate: YIO_AUDIO_SAMPLE_RATE,
+        sample_rate,
         format: IOAudioChannelData::FORMAT_PCM,
     });
 
@@ -667,13 +669,40 @@ mod tests {
 
     #[test]
     fn test_yio_frame_contains_40ms_at_16khz() {
-        let frame = build_yio_audio_frame_with_format(0.0, 60, 0, QuasarWireFormat::LegacyDirect);
+        let frame = build_yio_audio_frame_with_params(
+            0.0,
+            60,
+            0,
+            YIO_AUDIO_SAMPLE_RATE,
+            YIO_AUDIO_FRAME_SAMPLES,
+            QuasarWireFormat::LegacyDirect,
+        );
         let payload = pb_bytes(&frame[4..], QuasarMessageType::IO_AUDIO_CHANNELS_DATA).unwrap();
         let channels = IOAudioChannelsData::decode(payload).unwrap();
         assert_eq!(channels.channels.len(), 5);
         for channel in channels.channels {
             assert_eq!(channel.sample_rate, 16_000);
             assert_eq!(channel.data.len(), 640 * 2);
+        }
+
+        let frame_8k_20ms = build_yio_audio_frame_with_params(
+            45.0,
+            800,
+            1,
+            8_000,
+            160,
+            QuasarWireFormat::Envelope252,
+        );
+        let qmsg = QuasarMessage::decode(&frame_8k_20ms[4..]).unwrap();
+        assert_eq!(qmsg.wire_format, QuasarWireFormat::Envelope252);
+        let payload_8k = qmsg
+            .find_payload(QuasarMessageType::IO_AUDIO_CHANNELS_DATA)
+            .unwrap();
+        let channels_8k = IOAudioChannelsData::decode(payload_8k).unwrap();
+        assert_eq!(channels_8k.channels.len(), 5);
+        for channel in &channels_8k.channels {
+            assert_eq!(channel.sample_rate, 8_000);
+            assert_eq!(channel.data.len(), 160 * 2);
         }
     }
 

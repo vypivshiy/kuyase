@@ -2,10 +2,9 @@ use crate::audio::play_expressive_tts_to_alsa;
 use crate::proto::{
     build_alice_idle_event_with_format, build_alice_listening_event_with_format,
     build_alice_voice_event_with_format, build_endpoint_storage_add_endpoint_packet,
-    build_file_player_handshake_response_packet, build_yio_audio_frame_with_format,
+    build_file_player_handshake_response_packet, build_yio_audio_frame_with_params,
     decode_quasar_io_control_packet, decode_quasar_remoting_packet_with_format,
     frame_quasar_packet, DecodedIoHubPacket, DecodedRemoting, QuasarMessage, QuasarWireFormat,
-    YIO_AUDIO_FRAME_MS,
 };
 use crate::state::{AliceState, BridgeState};
 pub use crate::glagol::spawn_glagold_ipc_server;
@@ -45,25 +44,34 @@ pub fn spawn_yio_audio_server(state: Arc<BridgeState>) {
                 let mut seq = 0u64;
                 let mut next_frame = Instant::now();
                 loop {
+                    let audio_cfg = st.audio_config();
                     let doa = st.doa_angle.load(Ordering::Relaxed) as f32;
                     let muted = st.mics_muted.load(Ordering::Relaxed);
-                    let burst = st.mic_burst_active.load(Ordering::Relaxed);
                     let rms = if muted {
                         0
-                    } else if burst {
-                        st.mic_rms.load(Ordering::Relaxed).max(2400) as u16
                     } else {
                         st.mic_rms.load(Ordering::Relaxed) as u16
                     };
-                    let frame = build_yio_audio_frame_with_format(doa, rms, seq, peer_wf);
+                    let n_samples = audio_cfg.mic_frame_samples();
+                    let frame = build_yio_audio_frame_with_params(
+                        doa,
+                        rms,
+                        seq,
+                        audio_cfg.mic_sample_rate,
+                        n_samples,
+                        peer_wf,
+                    );
                     if s.write_all(&frame).is_err() {
                         break;
                     }
                     seq = seq.wrapping_add(1);
-                    let frame_interval = Duration::from_millis(YIO_AUDIO_FRAME_MS);
+                    let frame_interval =
+                        Duration::from_millis(audio_cfg.mic_send_interval_ms as u64);
                     next_frame += frame_interval;
                     let now = Instant::now();
-                    if now.saturating_duration_since(next_frame) > frame_interval {
+                    if audio_cfg.mic_lag_cap
+                        && now.saturating_duration_since(next_frame) > frame_interval
+                    {
                         next_frame = now;
                     } else {
                         thread::sleep(next_frame.saturating_duration_since(now));

@@ -23,6 +23,101 @@ pub const KIND_HOST_COMMAND: u8 = 1;
 
 pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
+pub const DEFAULT_MIC_SAMPLE_RATE: u32 = 16_000;
+pub const DEFAULT_MIC_FRAME_MS: u32 = 40;
+pub const DEFAULT_MIC_SEND_INTERVAL_MS: u32 = 40;
+pub const DEFAULT_MIC_LAG_CAP: bool = true;
+pub const DEFAULT_MIC_IDLE_RMS: u32 = 60;
+pub const DEFAULT_MIC_BURST_RMS: u32 = 2400;
+pub const DEFAULT_VOICE_RECOGNITION_DELAY_MS: u32 = 300;
+pub const DEFAULT_VOICE_BURST_DURATION_MS: u32 = 650;
+pub const DEFAULT_HIJACK_WINDOW_MS: u32 = 1680;
+pub const DEFAULT_CAPTURE_SAMPLE_RATE: u32 = 48_000;
+pub const MIN_CAPTURE_SAMPLE_RATE: u32 = 8_000;
+pub const MAX_CAPTURE_SAMPLE_RATE: u32 = 96_000;
+pub const DEFAULT_CAPTURE_CHUNK_MS: u32 = 20;
+pub const DEFAULT_SILENCE_GATE_RMS: u32 = 5;
+pub const DEFAULT_HANGOVER_MS: u32 = 400;
+pub const DEFAULT_HOST_MAX_INFLIGHT_CHUNKS: u32 = 24;
+pub const MIN_HOST_INFLIGHT_CHUNKS: u32 = 2;
+pub const MAX_HOST_INFLIGHT_CHUNKS: u32 = 128;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioConfig {
+    pub mic_sample_rate: u32,
+    pub mic_frame_ms: u32,
+    pub mic_send_interval_ms: u32,
+    pub mic_lag_cap: bool,
+    pub mic_idle_rms: u32,
+    pub mic_burst_rms: u32,
+    pub recognition_delay_ms: u32,
+    pub burst_duration_ms: u32,
+    pub hijack_window_ms: u32,
+    pub capture_sample_rate: u32,
+    pub capture_chunk_ms: u32,
+    pub silence_gate_rms: u32,
+    pub hangover_ms: u32,
+    pub host_max_inflight_chunks: u32,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self {
+            mic_sample_rate: DEFAULT_MIC_SAMPLE_RATE,
+            mic_frame_ms: DEFAULT_MIC_FRAME_MS,
+            mic_send_interval_ms: DEFAULT_MIC_SEND_INTERVAL_MS,
+            mic_lag_cap: DEFAULT_MIC_LAG_CAP,
+            mic_idle_rms: DEFAULT_MIC_IDLE_RMS,
+            mic_burst_rms: DEFAULT_MIC_BURST_RMS,
+            recognition_delay_ms: DEFAULT_VOICE_RECOGNITION_DELAY_MS,
+            burst_duration_ms: DEFAULT_VOICE_BURST_DURATION_MS,
+            hijack_window_ms: DEFAULT_HIJACK_WINDOW_MS,
+            capture_sample_rate: DEFAULT_CAPTURE_SAMPLE_RATE,
+            capture_chunk_ms: DEFAULT_CAPTURE_CHUNK_MS,
+            silence_gate_rms: DEFAULT_SILENCE_GATE_RMS,
+            hangover_ms: DEFAULT_HANGOVER_MS,
+            host_max_inflight_chunks: DEFAULT_HOST_MAX_INFLIGHT_CHUNKS,
+        }
+    }
+}
+
+impl AudioConfig {
+    pub fn sanitized(&self) -> Self {
+        Self {
+            mic_sample_rate: self.mic_sample_rate.clamp(8_000, 48_000),
+            mic_frame_ms: self.mic_frame_ms.clamp(5, 200),
+            mic_send_interval_ms: self.mic_send_interval_ms.clamp(5, 500),
+            mic_lag_cap: self.mic_lag_cap,
+            mic_idle_rms: self.mic_idle_rms.clamp(0, 10_000),
+            mic_burst_rms: self.mic_burst_rms.clamp(100, 28_000),
+            recognition_delay_ms: self.recognition_delay_ms.clamp(0, 5_000),
+            burst_duration_ms: self.burst_duration_ms.clamp(50, 10_000),
+            hijack_window_ms: self.hijack_window_ms.clamp(100, 15_000),
+            capture_sample_rate: self
+                .capture_sample_rate
+                .clamp(MIN_CAPTURE_SAMPLE_RATE, MAX_CAPTURE_SAMPLE_RATE),
+            capture_chunk_ms: self.capture_chunk_ms.clamp(5, 100),
+            silence_gate_rms: self.silence_gate_rms.clamp(0, 5_000),
+            hangover_ms: self.hangover_ms.clamp(0, 5_000),
+            host_max_inflight_chunks: self
+                .host_max_inflight_chunks
+                .clamp(MIN_HOST_INFLIGHT_CHUNKS, MAX_HOST_INFLIGHT_CHUNKS),
+        }
+    }
+
+    pub fn mic_frame_samples(&self) -> usize {
+        let cfg = self.sanitized();
+        (cfg.mic_sample_rate as usize * cfg.mic_frame_ms as usize) / 1000
+    }
+
+    pub fn capture_chunk_bytes(&self) -> usize {
+        let cfg = self.sanitized();
+        let frames = (cfg.capture_sample_rate as usize * cfg.capture_chunk_ms as usize) / 1000;
+        frames * 4
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AmplifierSlotState {
     pub i2c_device: String,
@@ -88,6 +183,8 @@ pub struct BridgeStateSnapshot {
     pub maind_logs: Vec<String>,
     #[serde(default)]
     pub available_led_patterns: Vec<LedPatternInfo>,
+    #[serde(default)]
+    pub audio_config: AudioConfig,
 }
 
 impl Default for BridgeStateSnapshot {
@@ -132,6 +229,7 @@ impl Default for BridgeStateSnapshot {
             recent_logs: Vec::new(),
             maind_logs: Vec::new(),
             available_led_patterns: Vec::new(),
+            audio_config: AudioConfig::default(),
         }
     }
 }
@@ -173,6 +271,9 @@ pub enum HostCommand {
         doa_angle: Option<u32>,
         rms: Option<u32>,
         wake_only: bool,
+    },
+    SetAudioConfig {
+        config: AudioConfig,
     },
     IpcTest {
         cmd: String,
@@ -364,6 +465,15 @@ mod tests {
                 rms: Some(2400),
                 wake_only: false,
             },
+            HostCommand::SetAudioConfig {
+                config: AudioConfig {
+                    mic_sample_rate: 8_000,
+                    mic_frame_ms: 20,
+                    mic_send_interval_ms: 25,
+                    mic_lag_cap: false,
+                    ..AudioConfig::default()
+                },
+            },
             HostCommand::IpcTest {
                 cmd: "vocalize".to_string(),
                 text: Some("Привет!".to_string()),
@@ -396,6 +506,13 @@ mod tests {
             display_kind: "matrix_21x12".to_string(),
             ring_pixels: vec![[107, 15, 255]; 36],
             logo_pixels: vec![[200, 110, 255]; 12],
+            audio_config: AudioConfig {
+                mic_sample_rate: 24_000,
+                mic_frame_ms: 20,
+                mic_send_interval_ms: 20,
+                hijack_window_ms: 2000,
+                ..AudioConfig::default()
+            },
             ..Default::default()
         };
         state.amplifiers.push(AmplifierSlotState {
@@ -453,6 +570,61 @@ mod tests {
         assert_eq!(&wav[8..16], b"WAVEfmt ");
         assert_eq!(&wav[36..40], b"data");
         assert_eq!(wav.len(), 44 + 3840);
+    }
+
+    #[test]
+    fn test_audio_config_defaults_and_sanitization() {
+        let def = AudioConfig::default();
+        assert_eq!(def.mic_sample_rate, 16_000);
+        assert_eq!(def.mic_frame_ms, 40);
+        assert_eq!(def.mic_send_interval_ms, 40);
+        assert!(def.mic_lag_cap);
+        assert_eq!(def.mic_idle_rms, 60);
+        assert_eq!(def.mic_burst_rms, 2400);
+        assert_eq!(def.recognition_delay_ms, 300);
+        assert_eq!(def.burst_duration_ms, 650);
+        assert_eq!(def.hijack_window_ms, 1680);
+        assert_eq!(def.capture_sample_rate, 48_000);
+        assert_eq!(def.capture_chunk_ms, 20);
+        assert_eq!(def.silence_gate_rms, 5);
+        assert_eq!(def.hangover_ms, 400);
+        assert_eq!(def.host_max_inflight_chunks, 24);
+        assert_eq!(def.mic_frame_samples(), 640);
+        assert_eq!(def.capture_chunk_bytes(), 3840);
+
+        let raw = AudioConfig {
+            mic_sample_rate: 1_000,
+            mic_frame_ms: 1,
+            mic_send_interval_ms: 9999,
+            mic_lag_cap: false,
+            mic_idle_rms: 99_999,
+            mic_burst_rms: 5,
+            recognition_delay_ms: 99_999,
+            burst_duration_ms: 1,
+            hijack_window_ms: 10,
+            capture_sample_rate: 200_000,
+            capture_chunk_ms: 1,
+            silence_gate_rms: 50_000,
+            hangover_ms: 50_000,
+            host_max_inflight_chunks: 1,
+        };
+        let clean = raw.sanitized();
+        assert_eq!(clean.mic_sample_rate, 8_000);
+        assert_eq!(clean.mic_frame_ms, 5);
+        assert_eq!(clean.mic_send_interval_ms, 500);
+        assert!(!clean.mic_lag_cap);
+        assert_eq!(clean.mic_idle_rms, 10_000);
+        assert_eq!(clean.mic_burst_rms, 100);
+        assert_eq!(clean.recognition_delay_ms, 5_000);
+        assert_eq!(clean.burst_duration_ms, 50);
+        assert_eq!(clean.hijack_window_ms, 100);
+        assert_eq!(clean.capture_sample_rate, 96_000);
+        assert_eq!(clean.capture_chunk_ms, 5);
+        assert_eq!(clean.silence_gate_rms, 5_000);
+        assert_eq!(clean.hangover_ms, 5_000);
+        assert_eq!(clean.host_max_inflight_chunks, 2);
+        assert_eq!(clean.mic_frame_samples(), 40);
+        assert_eq!(clean.capture_chunk_bytes(), 480 * 4);
     }
 
     #[test]

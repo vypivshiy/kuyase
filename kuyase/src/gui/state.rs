@@ -1,6 +1,6 @@
 use crate::bridge_client::BridgeClient;
 use crate::gui::host_audio::HostAudioPlayer;
-pub use crate::gui::os_dialogs::{
+use crate::gui::os_dialogs::{
     discover_images_in_folder, run_os_custom_file_dialog, run_os_file_dialog, run_os_folder_dialog,
 };
 pub use crate::gui::signal_log::{
@@ -66,6 +66,8 @@ pub struct UiConfig {
     pub selected_dump_path: String,
     pub active_terminal_tab: String,
     pub dock_collapsed: bool,
+    pub audio_config: protocol::AudioConfig,
+    pub mic_lock_interval_to_frame: bool,
 }
 
 impl Default for UiConfig {
@@ -90,6 +92,8 @@ impl Default for UiConfig {
             selected_dump_path: String::new(),
             active_terminal_tab: "signals".to_string(),
             dock_collapsed: false,
+            audio_config: protocol::AudioConfig::default(),
+            mic_lock_interval_to_frame: true,
         }
     }
 }
@@ -102,7 +106,6 @@ pub struct GuiAppState {
     pub latest_state: Option<BridgeStateSnapshot>,
     pub audio_player: HostAudioPlayer,
     pub guest_images: Vec<(String, PathBuf, u64)>,
-    pub firmware_dumps: Vec<(String, PathBuf)>,
     pub qemu_path: Option<PathBuf>,
     pub kernel_path: Option<PathBuf>,
     pub bg_task_running: Arc<AtomicBool>,
@@ -165,6 +168,10 @@ impl GuiAppState {
                 ) {
                     cfg.active_terminal_tab = "signals".to_string();
                 }
+                if cfg.mic_lock_interval_to_frame {
+                    cfg.audio_config.mic_send_interval_ms = cfg.audio_config.mic_frame_ms;
+                }
+                cfg.audio_config = cfg.audio_config.sanitized();
                 return cfg;
             }
         }
@@ -183,6 +190,11 @@ impl GuiAppState {
     pub fn new(root_dir: &Path) -> Self {
         let config = Self::load_config(root_dir);
         let audio_player = HostAudioPlayer::new(config.audio_muted);
+        audio_player.set_audio_params(
+            config.audio_config.capture_sample_rate,
+            config.audio_config.host_max_inflight_chunks,
+        );
+        let initial_voice_rms = config.audio_config.mic_burst_rms;
         let station2_wave_frame =
             crate::gui::display_geom::build_station2_preset_frame("wave", [0x6B, 0x0F, 0xFF], 255);
         let mut app = Self {
@@ -193,7 +205,6 @@ impl GuiAppState {
             latest_state: None,
             audio_player,
             guest_images: Vec::new(),
-            firmware_dumps: Vec::new(),
             qemu_path: None,
             kernel_path: None,
             bg_task_running: Arc::new(AtomicBool::new(false)),
@@ -240,7 +251,7 @@ impl GuiAppState {
             temp_slider: 40.0,
             volume_slider: 7,
             voice_phrase: "включи ночной режим".to_string(),
-            voice_rms: 2200,
+            voice_rms: initial_voice_rms,
             voice_wake_only: false,
             ipc_vocalize_text: "Привет! Сегодня в Москве плюс 21 градус, без осадков.".to_string(),
             last_voice_inject_at: None,
@@ -540,13 +551,12 @@ impl GuiAppState {
             self.config.selected_board = self.guest_images[0].0.clone();
         }
 
-        let dumps = crate::image_builder::discover_firmware_dumps(&self.root_dir);
         if self.config.selected_dump_path.is_empty() {
+            let dumps = crate::image_builder::discover_firmware_dumps(&self.root_dir);
             if let Some((_, first)) = dumps.first() {
                 self.config.selected_dump_path = first.display().to_string();
             }
         }
-        self.firmware_dumps = dumps;
     }
 
     pub fn active_images_dir(&self) -> PathBuf {
@@ -638,6 +648,27 @@ impl GuiAppState {
         self.send_command(HostCommand::SetLedPattern {
             pattern: pattern_id.to_string(),
         });
+    }
+
+    pub fn apply_audio_config(&mut self) {
+        if self.config.mic_lock_interval_to_frame {
+            self.config.audio_config.mic_send_interval_ms = self.config.audio_config.mic_frame_ms;
+        }
+        self.config.audio_config = self.config.audio_config.sanitized();
+        self.audio_player.set_audio_params(
+            self.config.audio_config.capture_sample_rate,
+            self.config.audio_config.host_max_inflight_chunks,
+        );
+        let _ = self.save_config();
+        let cfg = self.config.audio_config.clone();
+        self.send_command(HostCommand::SetAudioConfig { config: cfg });
+    }
+
+    pub fn reset_audio_config_to_defaults(&mut self) {
+        self.config.audio_config = protocol::AudioConfig::default();
+        self.config.mic_lock_interval_to_frame = true;
+        self.voice_rms = self.config.audio_config.mic_burst_rms;
+        self.apply_audio_config();
     }
 
     pub fn start_vm(&mut self) {
@@ -839,8 +870,18 @@ impl GuiAppState {
         if let Some(res) = pending_res {
             match res {
                 Ok(client) => {
+                    self.audio_player.set_audio_params(
+                        self.config.audio_config.capture_sample_rate,
+                        self.config.audio_config.host_max_inflight_chunks,
+                    );
                     self.audio_player.attach_bridge(&client);
-                    let snap = client.latest_state();
+                    let mut snap = client.latest_state();
+                    if self.config.audio_config != snap.audio_config {
+                        let _ = client.send_command(&HostCommand::SetAudioConfig {
+                            config: self.config.audio_config.clone(),
+                        });
+                        snap = client.latest_state();
+                    }
                     self.volume_slider = snap.volume_level;
                     self.doa_slider = snap.doa_angle;
                     self.tof_slider = snap.tof_mm;
@@ -1014,10 +1055,26 @@ mod tests {
             custom_ext4.display().to_string()
         );
 
+        app.config.audio_config.mic_sample_rate = 8_000;
+        app.config.audio_config.mic_frame_ms = 20;
+        app.config.audio_config.hijack_window_ms = 2400;
+        app.config.audio_config.capture_sample_rate = 24_000;
+        app.apply_audio_config();
+        assert_eq!(app.config.audio_config.mic_send_interval_ms, 20);
+        assert_eq!(app.audio_player.sample_rate(), 24_000);
+
         let reloaded = GuiAppState::load_config(&tmp);
         assert_eq!(reloaded.selected_board, "orion");
         assert_eq!(reloaded.custom_images_dir, extra_dir.display().to_string());
         assert_eq!(reloaded.custom_image_file, custom_ext4.display().to_string());
+        assert_eq!(reloaded.audio_config.mic_sample_rate, 8_000);
+        assert_eq!(reloaded.audio_config.mic_frame_ms, 20);
+        assert_eq!(reloaded.audio_config.hijack_window_ms, 2400);
+        assert_eq!(reloaded.audio_config.capture_sample_rate, 24_000);
+
+        app.reset_audio_config_to_defaults();
+        assert_eq!(app.config.audio_config, protocol::AudioConfig::default());
+        assert_eq!(app.audio_player.sample_rate(), 48_000);
 
         let _ = fs::remove_dir_all(&tmp);
     }

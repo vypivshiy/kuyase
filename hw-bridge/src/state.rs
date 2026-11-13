@@ -225,7 +225,58 @@ pub struct BridgeState {
     pub glagol_peers: Mutex<Vec<crate::glagol::GlagolPeerConnection>>,
     pub bridge_clients: Mutex<Vec<std::sync::mpsc::SyncSender<protocol::GuestPacket>>>,
     pub available_led_patterns: Vec<protocol::LedPatternInfo>,
+    pub audio_config: Mutex<protocol::AudioConfig>,
+    pub capture_config_generation: AtomicU32,
     pub peripherals: BoardPeripherals,
+}
+
+fn load_audio_config_from_env() -> protocol::AudioConfig {
+    let mut cfg = protocol::AudioConfig::default();
+    let parse_u32 = |key: &str| -> Option<u32> {
+        env::var(key).ok().and_then(|v| v.trim().parse::<u32>().ok())
+    };
+    if let Some(v) = parse_u32("QUASAR_MIC_RATE") {
+        cfg.mic_sample_rate = v;
+    }
+    if let Some(v) = parse_u32("QUASAR_MIC_FRAME_MS") {
+        cfg.mic_frame_ms = v;
+        cfg.mic_send_interval_ms = v;
+    }
+    if let Some(v) = parse_u32("QUASAR_MIC_INTERVAL_MS") {
+        cfg.mic_send_interval_ms = v;
+    }
+    if let Ok(raw) = env::var("QUASAR_MIC_LAG_CAP") {
+        let lower = raw.trim().to_ascii_lowercase();
+        cfg.mic_lag_cap = !matches!(lower.as_str(), "0" | "false" | "no" | "off");
+    }
+    if let Some(v) = parse_u32("QUASAR_MIC_IDLE_RMS") {
+        cfg.mic_idle_rms = v;
+    }
+    if let Some(v) = parse_u32("QUASAR_MIC_BURST_RMS") {
+        cfg.mic_burst_rms = v;
+    }
+    if let Some(v) = parse_u32("QUASAR_VOICE_RECOGNITION_DELAY_MS") {
+        cfg.recognition_delay_ms = v;
+    }
+    if let Some(v) = parse_u32("QUASAR_VOICE_BURST_MS") {
+        cfg.burst_duration_ms = v;
+    }
+    if let Some(v) = parse_u32("QUASAR_HIJACK_WINDOW_MS") {
+        cfg.hijack_window_ms = v;
+    }
+    if let Some(v) = parse_u32("QUASAR_AUDIO_RATE") {
+        cfg.capture_sample_rate = v;
+    }
+    if let Some(v) = parse_u32("QUASAR_AUDIO_CHUNK_MS") {
+        cfg.capture_chunk_ms = v;
+    }
+    if let Some(v) = parse_u32("QUASAR_AUDIO_GATE_RMS") {
+        cfg.silence_gate_rms = v;
+    }
+    if let Some(v) = parse_u32("QUASAR_AUDIO_HANGOVER_MS") {
+        cfg.hangover_ms = v;
+    }
+    cfg.sanitized()
 }
 
 impl BridgeState {
@@ -246,6 +297,8 @@ impl BridgeState {
             crate::proto::quasar_root::QuasarWireFormat::Envelope252 => 1,
         };
         let available_led_patterns = crate::leds::discover_guest_led_patterns();
+        let initial_audio_cfg = load_audio_config_from_env();
+        let initial_idle_rms = initial_audio_cfg.mic_idle_rms;
         Self {
             board_slug: profile.board_slug,
             board_name: profile.board_name,
@@ -255,7 +308,7 @@ impl BridgeState {
             has_clock: profile.has_clock,
             full_mode,
             doa_angle: AtomicU32::new(0),
-            mic_rms: AtomicU32::new(60),
+            mic_rms: AtomicU32::new(initial_idle_rms),
             mics_muted: AtomicBool::new(false),
             volume_level: AtomicU32::new(7),
             volume_overlay_until_ms: AtomicU64::new(0),
@@ -286,8 +339,35 @@ impl BridgeState {
             glagol_peers: Mutex::new(Vec::new()),
             bridge_clients: Mutex::new(Vec::new()),
             available_led_patterns,
+            audio_config: Mutex::new(initial_audio_cfg),
+            capture_config_generation: AtomicU32::new(0),
             peripherals,
         }
+    }
+
+    pub fn audio_config(&self) -> protocol::AudioConfig {
+        self.audio_config.lock().unwrap().clone()
+    }
+
+    pub fn set_audio_config(&self, cfg: protocol::AudioConfig) -> protocol::AudioConfig {
+        let clean = cfg.sanitized();
+        let capture_changed = {
+            let mut guard = self.audio_config.lock().unwrap();
+            let changed = guard.capture_sample_rate != clean.capture_sample_rate
+                || guard.capture_chunk_ms != clean.capture_chunk_ms;
+            *guard = clean.clone();
+            changed
+        };
+        if !self.mics_muted.load(Ordering::Relaxed)
+            && !self.mic_burst_active.load(Ordering::Relaxed)
+        {
+            self.mic_rms.store(clean.mic_idle_rms, Ordering::SeqCst);
+        }
+        if capture_changed {
+            self.captured_pcm.lock().unwrap().clear();
+            self.capture_config_generation.fetch_add(1, Ordering::SeqCst);
+        }
+        clean
     }
 
     pub fn broadcast_audio_chunk(&self, pcm_chunk: Vec<u8>) {
@@ -326,8 +406,9 @@ impl BridgeState {
 
     pub fn set_mics_muted(&self, muted: bool) {
         self.mics_muted.store(muted, Ordering::SeqCst);
+        let idle_rms = self.audio_config().mic_idle_rms;
         self.mic_rms
-            .store(if muted { 0 } else { 60 }, Ordering::SeqCst);
+            .store(if muted { 0 } else { idle_rms }, Ordering::SeqCst);
         self.peripherals
             .audio_hw
             .on_volume_or_mute_changed(self.volume_level.load(Ordering::Relaxed), muted);

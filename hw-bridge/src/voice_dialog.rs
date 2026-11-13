@@ -138,11 +138,16 @@ pub fn handle_inject_voice(
         };
     }
 
+    let audio_cfg = state.audio_config();
     if let Some(doa) = doa_angle {
         state.doa_angle.store(doa % 360, Ordering::SeqCst);
     }
     if let Some(r) = rms {
         state.mic_rms.store(r, Ordering::SeqCst);
+    } else {
+        state
+            .mic_rms
+            .store(audio_cfg.mic_burst_rms, Ordering::SeqCst);
     }
     let phrase_clean = phrase.trim().to_string();
 
@@ -152,9 +157,10 @@ pub fn handle_inject_voice(
     state.append_maind_log("[sdk] onAliceStateChanged: LISTENING");
     if !wake_only && !phrase_clean.is_empty() {
         state.log(format!(
-            "Voice Input -> DOA={}°, recognizedPhrase='{}' (1680ms hijack window started)",
+            "Voice Input -> DOA={}°, recognizedPhrase='{}' ({}ms hijack window started)",
             state.doa_angle.load(Ordering::Relaxed),
-            phrase_clean
+            phrase_clean,
+            audio_cfg.hijack_window_ms
         ));
         state.append_maind_log(&format!(
             "[sdk] onRequestStateChanged: LISTENING, recognizedPhrase='{}'",
@@ -171,8 +177,11 @@ pub fn handle_inject_voice(
         let request_id = format!("emu-{seq}");
         let transcript = phrase_clean.clone();
         let st_event = state.clone();
+        let rec_delay_ms = audio_cfg.recognition_delay_ms as u64;
         thread::spawn(move || {
-            thread::sleep(Duration::from_millis(300));
+            if rec_delay_ms > 0 {
+                thread::sleep(Duration::from_millis(rec_delay_ms));
+            }
             broadcast_alice_speech(&transcript, &request_id);
             st_event.log(format!(
                 "Voice recognition -> aliced event request_id={} ({} subscriber(s))",
@@ -187,15 +196,23 @@ pub fn handle_inject_voice(
     let phrase_for_tts = phrase_clean.clone();
     let parsed_vol = parse_phrase_volume(&phrase_clean);
     let parsed_transport = parse_phrase_transport(&phrase_clean);
+    let burst_ms = audio_cfg.burst_duration_ms as u64;
+    let hijack_ms = audio_cfg.hijack_window_ms as u64;
+    let post_burst_wait_ms = hijack_ms.saturating_sub(burst_ms);
     thread::spawn(move || {
-        thread::sleep(Duration::from_millis(650));
-        st.mic_burst_active.store(false, Ordering::SeqCst);
-        if !st.mics_muted.load(Ordering::Relaxed) {
-            st.mic_rms.store(60, Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(burst_ms));
+        if st.dialog_seq.load(Ordering::SeqCst) == seq {
+            st.mic_burst_active.store(false, Ordering::SeqCst);
+            if !st.mics_muted.load(Ordering::Relaxed) {
+                st.mic_rms
+                    .store(st.audio_config().mic_idle_rms, Ordering::SeqCst);
+            }
         }
 
         if has_phrase {
-            thread::sleep(Duration::from_millis(1030));
+            if post_burst_wait_ms > 0 {
+                thread::sleep(Duration::from_millis(post_burst_wait_ms));
+            }
             if st.dialog_seq.load(Ordering::SeqCst) == seq
                 && st.hijacked_seq.load(Ordering::SeqCst) < seq
             {
@@ -216,7 +233,10 @@ pub fn handle_inject_voice(
                                     cmd.as_str(),
                                     how
                                 ));
-                                st.log("Dialog Hijack window (1680ms) expired without CANCEL_DIALOG -> transport handled silently");
+                                st.log(format!(
+                                    "Dialog Hijack window ({}ms) expired without CANCEL_DIALOG -> transport handled silently",
+                                    hijack_ms
+                                ));
                                 st.set_alice_state(AliceState::Idle);
                                 st.append_maind_log("[sdk] onAliceStateChanged: IDLE");
                                 return;
@@ -235,7 +255,10 @@ pub fn handle_inject_voice(
                 let auto_reply = format!("Выполняю: {}", phrase_for_tts);
                 *st.last_spoken_text.lock().unwrap() = auto_reply.clone();
                 st.set_alice_state(AliceState::Speaking);
-                st.log("Dialog Hijack window (1680ms) expired without CANCEL_DIALOG -> native Alice SPEAKING");
+                st.log(format!(
+                    "Dialog Hijack window ({}ms) expired without CANCEL_DIALOG -> native Alice SPEAKING",
+                    hijack_ms
+                ));
                 st.append_maind_log("[sdk] onAliceStateChanged: SPEAKING");
                 st.append_maind_log("[sdk] onTtsStarted: request_id=alice_cloud_auto");
                 let _ = play_expressive_tts_to_alsa(&st, &auto_reply, seq);
